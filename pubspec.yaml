@@ -1,0 +1,93 @@
+name: cmcda_platform
+description: "CMCDA Platform — Plateforme numérique de collecte de cotisations, Cameroun Muslim Community Development Association"
+publish_to: 'none'
+version: 1.0.0+1
+
+environment:
+  sdk: '>=3.3.0 <4.0.0'
+
+dependencies:
+  flutter:
+    sdk: flutter
+  flutter_localizations:
+    sdk: flutter
+
+  # Firebase
+  firebase_core: ^3.6.0
+  firebase_auth: ^5.3.0
+  cloud_firestore: ^5.4.0
+  cloud_functions: ^5.1.0
+  firebase_messaging: ^15.1.0
+  firebase_storage: ^12.3.0
+  firebase_crashlytics: ^4.1.0
+  google_sign_in: ^6.2.1
+
+  # State Management
+  flutter_riverpod: ^2.5.1
+  riverpod_annotation: ^2.3.5
+
+  # Navigation
+  go_router: ^14.2.0
+
+  # UI / Fonts / Assets
+  google_fonts: ^6.2.1
+  flutter_svg: ^2.0.10+1
+  cached_network_image: ^3.4.1
+  shimmer: ^3.0.0
+  fl_chart: ^0.69.0
+
+  # Utilities
+  intl: ^0.20.2
+  shared_preferences: ^2.3.2
+  uuid: ^4.5.0
+  logger: ^2.4.0
+
+  # Device / Platform
+  flutter_local_notifications: ^17.2.2
+  permission_handler: ^11.3.1
+  url_launcher: ^6.3.1
+  image_picker: ^1.1.2
+  sign_in_with_apple: ^6.1.0
+  crypto: ^3.0.3
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^4.0.0
+  build_runner: ^2.4.12
+  riverpod_generator: ^2.4.3
+  flutter_launcher_icons: ^0.14.1
+  flutter_native_splash: ^2.4.1
+
+flutter:
+  uses-material-design: true
+
+  assets:
+    - assets/images/
+    - assets/icons/
+
+# ── App Icon (run: dart run flutter_launcher_icons) ──────────────
+# Place a 1024×1024 PNG at assets/images/app_icon.png before running.
+flutter_launcher_icons:
+  android: launcher_icon
+  ios: true
+  image_path: assets/images/app_icon.png
+  adaptive_icon_background: "#1A6B3C"
+  adaptive_icon_foreground: assets/images/app_icon.png
+  min_sdk_android: 21
+  web:
+    generate: true
+    image_path: assets/images/app_icon.png
+    background_color: "#1A6B3C"
+    theme_color: "#1A6B3C"
+
+# ── Splash Screen (run: dart run flutter_native_splash:create) ───
+flutter_native_splash:
+  color: "#1A6B3C"
+  image: assets/images/app_icon.png
+  android: true
+  web: true
+  fullscreen: false
+  android_12:
+    color: "#1A6B3C"
+    image: assets/images/app_icon.png

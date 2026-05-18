@@ -1,0 +1,41 @@
+rules_version = '2';
+service firebase.storage {
+  match /b/{bucket}/o {
+
+    // ── Avatars ─────────────────────────────────────────────────────────
+    // Users upload and manage their own avatar; any authenticated user can read.
+
+    match /avatars/{userId}/{fileName} {
+      allow read:  if request.auth != null;
+      allow write: if request.auth != null
+                   && request.auth.uid == userId
+                   && request.resource.size < 5 * 1024 * 1024
+                   && request.resource.contentType.matches('image/.*');
+      allow delete: if request.auth != null && request.auth.uid == userId;
+    }
+
+    // ── Receipts / Documents ─────────────────────────────────────────────
+    // The owning member can read their own receipts.
+    // Any authenticated user can write (app-layer auth controls who calls this).
+    // Fine-grained role checks happen in Firestore; Storage keeps it simple.
+
+    match /receipts/{userId}/{fileName} {
+      allow read:  if request.auth != null
+                   && (request.auth.uid == userId
+                       || request.auth.token.email != null); // all staff have email
+      allow write: if request.auth != null
+                   && request.resource.size < 5 * 1024 * 1024;
+    }
+
+    // ── Focal Report Attachments ─────────────────────────────────────────
+    // Any authenticated user can read; focals upload under their own UID folder.
+
+    match /focal_reports/{focalId}/{fileName} {
+      allow read:  if request.auth != null;
+      allow write: if request.auth != null
+                   && request.auth.uid == focalId
+                   && request.resource.size < 10 * 1024 * 1024;
+      allow delete: if request.auth != null && request.auth.uid == focalId;
+    }
+  }
+}

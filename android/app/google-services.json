@@ -1,0 +1,82 @@
+{
+  "project_info": {
+    "project_number": "1050677298259",
+    "project_id": "cmcda-2f485",
+    "storage_bucket": "cmcda-2f485.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:1050677298259:android:fad4c18968f4f8bab5b2a6",
+        "android_client_info": {
+          "package_name": "com.woilatech.cmcda"
+        }
+      },
+      "oauth_client": [
+        {
+          "client_id": "1050677298259-bb8gb12hfag1qs342oq767qjoiukjajm.apps.googleusercontent.com",
+          "client_type": 3
+        }
+      ],
+      "api_key": [
+        {
+          "current_key": "AIzaSyBiIzwDfhjHVWliqz_A5mwUGu-s_wEChZ0"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": [
+            {
+              "client_id": "1050677298259-bb8gb12hfag1qs342oq767qjoiukjajm.apps.googleusercontent.com",
+              "client_type": 3
+            },
+            {
+              "client_id": "1050677298259-rgd2njr6r9gnqdt6enoprutjm0lq6agr.apps.googleusercontent.com",
+              "client_type": 2,
+              "ios_info": {
+                "bundle_id": "com.woilatech.cmcda"
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:1050677298259:android:32194dc79392bcdbb5b2a6",
+        "android_client_info": {
+          "package_name": "com.woilatech.cmcda_platform"
+        }
+      },
+      "oauth_client": [
+        {
+          "client_id": "1050677298259-bb8gb12hfag1qs342oq767qjoiukjajm.apps.googleusercontent.com",
+          "client_type": 3
+        }
+      ],
+      "api_key": [
+        {
+          "current_key": "AIzaSyBiIzwDfhjHVWliqz_A5mwUGu-s_wEChZ0"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": [
+            {
+              "client_id": "1050677298259-bb8gb12hfag1qs342oq767qjoiukjajm.apps.googleusercontent.com",
+              "client_type": 3
+            },
+            {
+              "client_id": "1050677298259-rgd2njr6r9gnqdt6enoprutjm0lq6agr.apps.googleusercontent.com",
+              "client_type": 2,
+              "ios_info": {
+                "bundle_id": "com.woilatech.cmcda"
+              }
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

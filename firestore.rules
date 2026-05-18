@@ -1,0 +1,167 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ── Helpers ──────────────────────────────────────────────────────────
+
+    function isAuth() {
+      return request.auth != null;
+    }
+
+    function isOwner(uid) {
+      return isAuth() && request.auth.uid == uid;
+    }
+
+    function userDoc() {
+      return get(/databases/$(database)/documents/users/$(request.auth.uid)).data;
+    }
+
+    function role() {
+      return isAuth() ? userDoc().get('role', 'member') : null;
+    }
+
+    function isAdmin() {
+      return isAuth() && role() in ['admin', 'super_admin'];
+    }
+
+    function isSuperAdmin() {
+      return isAuth() && role() == 'super_admin';
+    }
+
+    function isFocal() {
+      return isAuth() && role() == 'focal';
+    }
+
+    function isFocalOrAdmin() {
+      return isFocal() || isAdmin();
+    }
+
+    function isActive() {
+      return isAuth() && userDoc().get('status', 'inactive') == 'active';
+    }
+
+    // ── users ─────────────────────────────────────────────────────────────
+    // Members read own doc; admins & focals read all; admins update any.
+
+    match /users/{userId} {
+      allow read: if isOwner(userId) || isFocalOrAdmin();
+      allow create: if (isOwner(userId) && isAuth())
+                    || (isFocal() && isActive() &&
+                        request.resource.data.role == 'member');
+      allow update: if (isOwner(userId) && isActive() &&
+                        request.resource.data.diff(resource.data)
+                          .affectedKeys()
+                          .hasOnly(['fcmToken','language','preferredPayment',
+                                    'preferredFrequency','avatarUrl','updatedAt',
+                                    'firstName','lastName','email',
+                                    'region','department','city','quarter']))
+                    // Incrementing totalContributed: owner (mobile-money self-pay)
+                    // or focal officer (recording a member payment). Value may
+                    // only increase to prevent tampering.
+                    || ((isOwner(userId) || isFocal()) && isActive() &&
+                        request.resource.data.diff(resource.data)
+                          .affectedKeys()
+                          .hasOnly(['totalContributed']) &&
+                        request.resource.data.totalContributed >=
+                          resource.data.get('totalContributed', 0))
+                    // Focal officers can update basic profile fields for their members.
+                    || (isFocal() && isActive() &&
+                        request.resource.data.diff(resource.data)
+                          .affectedKeys()
+                          .hasOnly(['firstName','lastName','phone',
+                                    'city','quarter','updatedAt']))
+                    || isAdmin();
+      allow delete: if isSuperAdmin();
+    }
+
+    // ── contributions ─────────────────────────────────────────────────────
+    // Members create own; focal creates for members in session;
+    // admins read all and can update status (validate/reject).
+
+    match /contributions/{contributionId} {
+      allow read: if isAuth() &&
+                  (resource.data.memberId == request.auth.uid || isFocalOrAdmin());
+      allow create: if isActive() &&
+                    (request.resource.data.memberId == request.auth.uid || isFocalOrAdmin());
+      allow update: if isAdmin() &&
+                    request.resource.data.diff(resource.data)
+                      .affectedKeys()
+                      .hasOnly(['status','validatedBy','secondValidatorId',
+                                'confirmedAt','notes','focalReportId']);
+      allow delete: if isSuperAdmin();
+    }
+
+    // ── focal_reports ─────────────────────────────────────────────────────
+    // Focals create/update their own draft; admins read all and validate.
+
+    match /focal_reports/{reportId} {
+      allow read: if isAuth() &&
+                  (resource.data.focalId == request.auth.uid || isAdmin());
+      allow create: if isFocal() && isActive() &&
+                    request.resource.data.focalId == request.auth.uid;
+      allow update: if (isFocal() &&
+                        resource.data.focalId == request.auth.uid &&
+                        resource.data.status == 'draft' &&
+                        request.resource.data.status in ['draft', 'submitted'])
+                    || (isAdmin() &&
+                        request.resource.data.diff(resource.data)
+                          .affectedKeys()
+                          .hasOnly(['status','validatedBy','notes']));
+      allow delete: if isSuperAdmin();
+    }
+
+    // ── notifications ─────────────────────────────────────────────────────
+    // Users read/delete their own; only read flag can be updated by owner.
+    // Admins/focals create notifications.
+
+    match /notifications/{notificationId} {
+      allow read: if isAuth() && resource.data.userId == request.auth.uid;
+      allow create: if isFocalOrAdmin();
+      allow update: if isAuth() &&
+                    resource.data.userId == request.auth.uid &&
+                    request.resource.data.diff(resource.data)
+                      .affectedKeys().hasOnly(['read']);
+      allow delete: if isAuth() && resource.data.userId == request.auth.uid;
+    }
+
+    // ── audit_logs ────────────────────────────────────────────────────────
+    // Read-only for admins; writes only from Cloud Functions.
+
+    match /audit_logs/{logId} {
+      allow read: if isAdmin();
+      allow write: if false;
+    }
+
+    // ── counters ──────────────────────────────────────────────────────────
+    // Atomic transactions from authenticated users only.
+
+    match /counters/{counterId} {
+      allow read: if isAuth();
+      allow write: if isAuth();
+    }
+
+    // ── wallet_accounts ───────────────────────────────────────────────────
+    // Any authenticated user can read (transparency); only admins can write.
+
+    match /wallet_accounts/{accountId} {
+      allow read: if isAuth();
+      allow create, update, delete: if isAdmin();
+    }
+
+    // ── wallet_transactions ───────────────────────────────────────────────
+    // Admin-only read/write; Cloud Functions write via service account (bypass).
+
+    match /wallet_transactions/{txId} {
+      allow read, create, update, delete: if isAdmin();
+    }
+
+    // ── wallet_config ─────────────────────────────────────────────────────
+    // summary doc: readable by all authenticated users (member transparency).
+    // payment_method_map + writes: admin only.
+
+    match /wallet_config/{docId} {
+      allow read: if isAuth();
+      allow write: if isAdmin();
+    }
+  }
+}

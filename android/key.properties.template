@@ -1,0 +1,15 @@
+# Copy this file to android/key.properties (never commit key.properties to git).
+# Generate a release keystore once with:
+#
+#   keytool -genkey -v -keystore cmcda_release.keystore \
+#     -alias cmcda -keyalg RSA -keysize 2048 -validity 10000 \
+#     -storepass YOUR_STORE_PASSWORD -keypass YOUR_KEY_PASSWORD \
+#     -dname "CN=CMCDA Platform, O=WoilaTech, L=Ngaoundere, ST=Adamaoua, C=CM"
+#
+# Place the generated .keystore file one level above the android/ directory
+# (i.e. next to pubspec.yaml) so the path below resolves correctly.
+#
+storeFile=../cmcda_release.keystore
+storePassword=YOUR_STORE_PASSWORD
+keyAlias=cmcda
+keyPassword=YOUR_KEY_PASSWORD
