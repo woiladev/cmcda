@@ -4,16 +4,13 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project
 
-**CMCDA Platform** — Flutter app for collecting contributions from Muslim community members in Cameroon. Built by WoilaTech (Ngaoundéré). Firebase project: `cmcda-2f485`. Platforms: Android (primary) + Web.
+**CMCDA Platform** — Flutter app for collecting contributions from Muslim community members in Cameroon. Built by WoilaTech (Ngaoundéré). Firebase project: `cmcda-2f485`. Platform: Android only (the Flutter web target has been removed).
 
 ## Commands
 
 ```bash
 # Run on Android
 flutter run -d android
-
-# Run on web (Chrome)
-flutter run -d chrome
 
 # Build release APK
 flutter build apk --release
@@ -28,7 +25,7 @@ dart format lib/
 firebase deploy --only firestore:rules,firestore:indexes,storage --project cmcda-2f485
 
 # Re-generate firebase_options.dart if Firebase project changes
-flutterfire configure --project=cmcda-2f485 --platforms=android,web --android-package-name=com.woilatech.cmcda_platform --yes
+flutterfire configure --project=cmcda-2f485 --platforms=android --android-package-name=com.woilatech.cmcda_platform --yes
 
 # Re-download google-services.json (after adding SHA certs or enabling auth providers)
 firebase apps:sdkconfig android 1:1050677298259:android:32194dc79392bcdbb5b2a6 --out android/app/google-services.json --project cmcda-2f485
@@ -132,7 +129,7 @@ Counters use `SetOptions(merge: true)` — the docs are created on first write. 
 
 Cash and bank transfers (`isCashOrBank = true`) are created with `status = 'pending'` and `validationRequired = true`. Mobile money is auto-confirmed (`status = 'confirmed'`).
 
-**Bank transfers (member-initiated)** use a single-step approval. The member sees the CMCDA bank details (from `app_config/bank_details`, falling back to `AppConstants.bankName`/`bankAccount`), uploads a **required** proof-of-transfer image (stored at `receipts/{uid}/...` via `ContributionRepository.uploadProof`, which uses `putData` for Web compatibility — `proofUrl` is saved on the contribution), then confirms. A super admin reviews the proof and calls `confirmContribution(id, adminId)` → sets `validatedBy`, `status = confirmed`, `confirmedAt`, and credits totals in one step. Super admins edit the bank details via the admin settings → bank-details screen (`AppRoutes.adminBankDetails`).
+**Bank transfers (member-initiated)** use a single-step approval. The member sees the CMCDA bank details (from `app_config/bank_details`, falling back to `AppConstants.bankName`/`bankAccount`), uploads a **required** proof-of-transfer image (stored at `receipts/{uid}/...` via `ContributionRepository.uploadProof`, which uses `putData` — `proofUrl` is saved on the contribution), then confirms. A super admin reviews the proof and calls `confirmContribution(id, adminId)` → sets `validatedBy`, `status = confirmed`, `confirmedAt`, and credits totals in one step. Super admins edit the bank details via the admin settings → bank-details screen (`AppRoutes.adminBankDetails`).
 
 **Cash** still uses two-step dual-approval:
 1. First admin calls `validatePayment(id, adminId)` → sets `validatedBy`.
@@ -146,7 +143,7 @@ Receipt numbers (`RCP-000001`) are assigned **server-side** by `onContributionCr
 
 ### Offline support & sync
 
-The app is offline-first via Firestore's local cache, enabled in `main.dart` (`Settings(persistenceEnabled: true, cacheSizeBytes: CACHE_SIZE_UNLIMITED)`, set before any Firestore use — works on Android and Web). All reads serve from cache when offline; writes queue locally and sync on reconnect. Primary field case: a focal officer recording cash payments with no signal.
+The app is offline-first via Firestore's local cache, enabled in `main.dart` (`Settings(persistenceEnabled: true, cacheSizeBytes: CACHE_SIZE_UNLIMITED)`, set before any Firestore use). All reads serve from cache when offline; writes queue locally and sync on reconnect. Primary field case: a focal officer recording cash payments with no signal.
 
 Key rules when touching write paths:
 
