@@ -8,6 +8,8 @@ import 'package:go_router/go_router.dart';
 
 import '../../../core/constants/app_constants.dart';
 import '../../../core/constants/app_routes.dart';
+import '../../../core/l10n/app_localizations.dart';
+import '../../../core/services/language_service.dart';
 import '../../../core/services/router_service.dart';
 import '../../../core/theme/app_theme.dart';
 import '../../../core/utils/app_utils.dart';
@@ -39,45 +41,60 @@ class _AdminFocalReportsScreenState
   // ── Actions ───────────────────────────────────────────────
 
   Future<void> _validate(FocalReportModel report) async {
-    final adminId =
-        ref.read(currentUserProfileProvider).valueOrNull?.id ?? '';
+    final l = AppLocalizations.of(context);
+    final messenger = ScaffoldMessenger.of(context);
     final ok = await showDialog<bool>(
       context: context,
       builder: (ctx) => AlertDialog(
-        title: Text('Valider ce rapport ?',
+        title: Text(l.validateReportTitle,
             style: GoogleFonts.plusJakartaSans(
                 fontWeight: FontWeight.w700, color: AppColors.textDark)),
         content: Text(
-          'Le rapport de ${report.focalName} (${report.location}) sera marqué comme validé.',
+          l.validateReportConfirmBody(
+            report.membersServed.toString(),
+            AppUtils.formatAmount(report.totalCollected),
+          ),
           style:
               GoogleFonts.plusJakartaSans(color: AppColors.textGray, fontSize: 13),
         ),
         actions: [
           TextButton(
               onPressed: () => Navigator.pop(ctx, false),
-              child: const Text('Annuler')),
+              child: Text(l.cancel)),
           ElevatedButton(
             onPressed: () => Navigator.pop(ctx, true),
             style: ElevatedButton.styleFrom(
                 backgroundColor: AppColors.success,
                 foregroundColor: Colors.white),
-            child: const Text('Valider'),
+            child: Text(l.validate),
           ),
         ],
       ),
     );
     if (ok != true || !mounted) return;
-    await _repo.validateReport(report.id, adminId);
+    try {
+      final res = await _repo.validateReport(report.id);
+      messenger.showSnackBar(SnackBar(
+        content: Text(l.reportConfirmedMessage(
+          res.confirmed.toString(),
+          AppUtils.formatAmount(res.total),
+        )),
+        backgroundColor: AppColors.success,
+      ));
+    } catch (_) {
+      messenger.showSnackBar(SnackBar(
+          content: Text(l.unknownError), backgroundColor: AppColors.error));
+    }
   }
 
   Future<void> _reject(FocalReportModel report) async {
-    final adminId =
-        ref.read(currentUserProfileProvider).valueOrNull?.id ?? '';
+    final l = AppLocalizations.of(context);
+    final messenger = ScaffoldMessenger.of(context);
     final reasonCtrl = TextEditingController();
     final ok = await showDialog<bool>(
       context: context,
       builder: (ctx) => AlertDialog(
-        title: Text('Rejeter ce rapport ?',
+        title: Text(l.rejectReportTitle,
             style: GoogleFonts.plusJakartaSans(
                 fontWeight: FontWeight.w700, color: AppColors.textDark)),
         content: Column(
@@ -85,7 +102,7 @@ class _AdminFocalReportsScreenState
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             Text(
-              'Indiquez la raison du rejet :',
+              l.enterRejectReason,
               style: GoogleFonts.plusJakartaSans(
                   color: AppColors.textGray, fontSize: 13),
             ),
@@ -94,7 +111,7 @@ class _AdminFocalReportsScreenState
               controller: reasonCtrl,
               maxLines: 3,
               decoration: InputDecoration(
-                hintText: 'Raison...',
+                hintText: l.enterRejectReasonShort,
                 filled: true,
                 fillColor: AppColors.bg,
                 border: OutlineInputBorder(
@@ -107,20 +124,27 @@ class _AdminFocalReportsScreenState
         actions: [
           TextButton(
               onPressed: () => Navigator.pop(ctx, false),
-              child: const Text('Annuler')),
+              child: Text(l.cancel)),
           ElevatedButton(
             onPressed: () => Navigator.pop(ctx, true),
             style: ElevatedButton.styleFrom(
                 backgroundColor: AppColors.error,
                 foregroundColor: Colors.white),
-            child: const Text('Rejeter'),
+            child: Text(l.reject),
           ),
         ],
       ),
     );
-    if (ok != true || !mounted) return;
-    await _repo.rejectReport(
-        report.id, adminId, reasonCtrl.text.trim());
+    if (ok != true || !mounted) {
+      reasonCtrl.dispose();
+      return;
+    }
+    try {
+      await _repo.rejectReport(report.id, reasonCtrl.text.trim());
+    } catch (_) {
+      messenger.showSnackBar(SnackBar(
+          content: Text(l.unknownError), backgroundColor: AppColors.error));
+    }
     reasonCtrl.dispose();
   }
 
@@ -128,6 +152,7 @@ class _AdminFocalReportsScreenState
 
   @override
   Widget build(BuildContext context) {
+    final l = AppLocalizations.of(context);
     final reportsAsync = ref.watch(_allReportsProvider);
 
     return AnnotatedRegion<SystemUiOverlayStyle>(
@@ -144,8 +169,8 @@ class _AdminFocalReportsScreenState
               child: reportsAsync.when(
                 loading: () => const Center(
                     child: CircularProgressIndicator(color: AppColors.primary)),
-                error: (e, _) => Center(
-                    child: Text('Erreur: $e',
+                error: (_, __) => Center(
+                    child: Text(l.unknownError,
                         style: const TextStyle(color: AppColors.error))),
                 data: (reports) => _buildBody(context, reports),
               ),
@@ -159,6 +184,7 @@ class _AdminFocalReportsScreenState
   // ── Header ────────────────────────────────────────────────
 
   Widget _buildHeader(BuildContext context) {
+    final l = AppLocalizations.of(context);
     return Container(
       decoration: const BoxDecoration(
         gradient: LinearGradient(
@@ -193,7 +219,7 @@ class _AdminFocalReportsScreenState
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               Text(
-                'Rapports focaux',
+                l.focalReportsHeaderTitle,
                 style: GoogleFonts.playfairDisplay(
                   color: Colors.white,
                   fontSize: 20,
@@ -201,7 +227,7 @@ class _AdminFocalReportsScreenState
                 ),
               ),
               Text(
-                'Soumissions des officiers focaux',
+                l.focalReportsHeaderSubtitle,
                 style: TextStyle(
                   color: Colors.white.withValues(alpha: 0.65),
                   fontSize: 12,
@@ -217,6 +243,10 @@ class _AdminFocalReportsScreenState
   // ── Body ──────────────────────────────────────────────────
 
   Widget _buildBody(BuildContext context, List<FocalReportModel> all) {
+    final l = AppLocalizations.of(context);
+    final isSuperAdmin =
+        ref.watch(currentUserProfileProvider).valueOrNull?.isSuperAdmin ??
+            false;
     final submitted =
         all.where((r) => r.status == FocalReportModel.statusSubmitted).length;
     final validated =
@@ -239,7 +269,7 @@ class _AdminFocalReportsScreenState
           child: Row(
             children: [
               _StatChip(
-                label: 'En attente',
+                label: l.pendingFilter,
                 count: submitted,
                 color: AppColors.warning,
                 selected: _filterStatus == FocalReportModel.statusSubmitted,
@@ -250,7 +280,7 @@ class _AdminFocalReportsScreenState
               ),
               const SizedBox(width: AppConstants.spaceSM),
               _StatChip(
-                label: 'Validés',
+                label: l.validatedFilter,
                 count: validated,
                 color: AppColors.success,
                 selected: _filterStatus == FocalReportModel.statusValidated,
@@ -261,7 +291,7 @@ class _AdminFocalReportsScreenState
               ),
               const SizedBox(width: AppConstants.spaceSM),
               _StatChip(
-                label: 'Rejetés',
+                label: l.rejectedFilter,
                 count: rejected,
                 color: AppColors.error,
                 selected: _filterStatus == FocalReportModel.statusRejected,
@@ -272,7 +302,7 @@ class _AdminFocalReportsScreenState
               ),
               const Spacer(),
               Text(
-                '${all.length} total',
+                '${all.length} ${l.totalLabel}',
                 style: const TextStyle(
                     color: AppColors.textGray, fontSize: 11),
               ),
@@ -294,6 +324,7 @@ class _AdminFocalReportsScreenState
                         AppRoutes.focalReport, extra: filtered[i].id),
                     child: _ReportCard(
                       report: filtered[i],
+                      canModerate: isSuperAdmin,
                       onValidate: () => _validate(filtered[i]),
                       onReject: () => _reject(filtered[i]),
                     ),
@@ -305,6 +336,7 @@ class _AdminFocalReportsScreenState
   }
 
   Widget _buildEmpty() {
+    final l = AppLocalizations.of(context);
     return Center(
       child: Column(
         mainAxisAlignment: MainAxisAlignment.center,
@@ -313,9 +345,7 @@ class _AdminFocalReportsScreenState
               size: 56, color: AppColors.border),
           const SizedBox(height: AppConstants.spaceMD),
           Text(
-            _filterStatus == null
-                ? 'Aucun rapport focal'
-                : 'Aucun rapport dans cette catégorie',
+            l.noFocalReports,
             style: const TextStyle(color: AppColors.textGray, fontSize: 14),
           ),
         ],
@@ -385,23 +415,27 @@ class _StatChip extends StatelessWidget {
 
 // ── Report card ───────────────────────────────────────────────
 
-class _ReportCard extends StatelessWidget {
+class _ReportCard extends ConsumerWidget {
   final FocalReportModel report;
+  final bool canModerate;
   final VoidCallback onValidate;
   final VoidCallback onReject;
 
   const _ReportCard({
     required this.report,
+    required this.canModerate,
     required this.onValidate,
     required this.onReject,
   });
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context, WidgetRef ref) {
+    final l = AppLocalizations.of(context);
+    final localeCode = ref.watch(currentLocaleProvider).languageCode;
     final statusColor = _statusColor(report.status);
     final date = report.reportDate.toDate();
     final dateLabel =
-        DateFormat('d MMM yyyy', 'fr_FR').format(date);
+        DateFormat('d MMM yyyy', localeCode).format(date);
 
     return Container(
       decoration: BoxDecoration(
@@ -473,12 +507,12 @@ class _ReportCard extends StatelessWidget {
                       children: [
                         _MiniStat(
                           icon: Icons.people_outline,
-                          label: '${report.membersServed} membres',
+                          label: l.membersCount(report.membersServed),
                         ),
                         const SizedBox(width: AppConstants.spaceMD),
                         _MiniStat(
                           icon: Icons.person_add_outlined,
-                          label: '${report.newMembersCount} nouveaux',
+                          label: l.newMembersCount(report.newMembersCount),
                         ),
                         const Spacer(),
                         Text(
@@ -520,8 +554,8 @@ class _ReportCard extends StatelessWidget {
                         ),
                       ),
                     ],
-                    // Action buttons for submitted reports
-                    if (report.isSubmitted) ...[
+                    // Action buttons for submitted reports (super_admin only)
+                    if (report.isSubmitted && canModerate) ...[
                       const SizedBox(height: AppConstants.spaceSM),
                       Row(
                         children: [
@@ -529,7 +563,7 @@ class _ReportCard extends StatelessWidget {
                             child: OutlinedButton.icon(
                               onPressed: onReject,
                               icon: const Icon(Icons.close_rounded, size: 14),
-                              label: const Text('Rejeter'),
+                              label: Text(l.reject),
                               style: OutlinedButton.styleFrom(
                                 foregroundColor: AppColors.error,
                                 side: const BorderSide(
@@ -547,7 +581,7 @@ class _ReportCard extends StatelessWidget {
                               onPressed: onValidate,
                               icon: const Icon(Icons.check_rounded,
                                   size: 14),
-                              label: const Text('Valider'),
+                              label: Text(l.validate),
                               style: ElevatedButton.styleFrom(
                                 backgroundColor: AppColors.success,
                                 foregroundColor: Colors.white,
@@ -593,11 +627,12 @@ class _StatusBadge extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final l = AppLocalizations.of(context);
     final (label, color) = switch (status) {
-      FocalReportModel.statusSubmitted => ('En attente', AppColors.warning),
-      FocalReportModel.statusValidated => ('Validé', AppColors.success),
-      FocalReportModel.statusRejected => ('Rejeté', AppColors.error),
-      _ => ('Brouillon', AppColors.border),
+      FocalReportModel.statusSubmitted => (l.pending, AppColors.warning),
+      FocalReportModel.statusValidated => (l.validatedStatus, AppColors.success),
+      FocalReportModel.statusRejected => (l.rejectedStatus, AppColors.error),
+      _ => (l.draftStatus, AppColors.border),
     };
 
     return Container(

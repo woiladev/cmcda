@@ -24,6 +24,7 @@ final _allUsersProvider = StreamProvider.autoDispose<List<UserModel>>((ref) {
   return FirebaseFirestore.instance
       .collection(AppConstants.usersCollection)
       .orderBy('createdAt', descending: true)
+      .limit(500)
       .snapshots()
       .map((s) => s.docs.map((d) => UserModel.fromFirestore(d)).toList());
 });
@@ -83,34 +84,34 @@ class _AdminMembersScreenState extends ConsumerState<AdminMembersScreen> {
   }
 
   Future<void> _updateStatus(UserModel user, String newStatus) async {
+    final l = AppLocalizations.of(context);
     final messenger = ScaffoldMessenger.of(context);
-    final errMsg = AppLocalizations.of(context).unknownError;
     try {
       await _authRepo.updateProfile(user.id, {'status': newStatus});
       messenger.showSnackBar(SnackBar(
-        content: Text('${user.fullName} — statut mis à jour'),
+        content: Text(l.memberStatusUpdated(user.fullName)),
         backgroundColor: AppColors.success,
       ));
     } catch (_) {
       messenger.showSnackBar(SnackBar(
-        content: Text(errMsg),
+        content: Text(l.unknownError),
         backgroundColor: AppColors.error,
       ));
     }
   }
 
   Future<void> _updateRole(UserModel user, String newRole) async {
+    final l = AppLocalizations.of(context);
     final messenger = ScaffoldMessenger.of(context);
-    final errMsg = AppLocalizations.of(context).unknownError;
     try {
-      await _authRepo.updateProfile(user.id, {'role': newRole});
+      await _authRepo.setUserRole(user.id, newRole);
       messenger.showSnackBar(SnackBar(
-        content: Text('${user.fullName} — rôle mis à jour'),
+        content: Text(l.memberRoleUpdated(user.fullName)),
         backgroundColor: AppColors.success,
       ));
     } catch (_) {
       messenger.showSnackBar(SnackBar(
-        content: Text(errMsg),
+        content: Text(l.unknownError),
         backgroundColor: AppColors.error,
       ));
     }
@@ -230,20 +231,6 @@ class _AdminMembersScreenState extends ConsumerState<AdminMembersScreen> {
       ),
       child: Row(
         children: [
-          GestureDetector(
-            onTap: () => Navigator.of(context).pop(),
-            child: Container(
-              width: 36,
-              height: 36,
-              decoration: BoxDecoration(
-                color: Colors.white.withValues(alpha: 0.12),
-                shape: BoxShape.circle,
-              ),
-              child: const Icon(Icons.arrow_back_rounded,
-                  color: Colors.white, size: 20),
-            ),
-          ),
-          const SizedBox(width: AppConstants.spaceMD),
           Expanded(
             child: Text(
               l.membersManagement,
@@ -351,7 +338,9 @@ class _AdminMembersScreenState extends ConsumerState<AdminMembersScreen> {
         AppConstants.spaceMD,
         AppConstants.spaceMD,
       ),
-      child: Row(
+      child: SingleChildScrollView(
+        scrollDirection: Axis.horizontal,
+        child: Row(
         children: chips.map((chip) {
           final selected = _filter == chip.$1;
           return Padding(
@@ -388,6 +377,7 @@ class _AdminMembersScreenState extends ConsumerState<AdminMembersScreen> {
             ),
           );
         }).toList(),
+        ),
       ),
     );
   }

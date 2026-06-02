@@ -1,6 +1,5 @@
 ﻿import 'dart:async';
 
-import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -10,8 +9,10 @@ import 'package:google_fonts/google_fonts.dart';
 import '../../../core/constants/app_constants.dart';
 import '../../../core/constants/app_routes.dart';
 import '../../../core/l10n/app_localizations.dart';
-import '../../../core/services/notification_service.dart';
+import '../../../core/services/language_service.dart';
 import '../../../core/theme/app_theme.dart';
+import '../../../core/utils/app_utils.dart';
+import '../../../core/utils/auth_error_messages.dart';
 import '../../../data/models/user_model.dart';
 import '../../../data/repositories/auth_repository.dart';
 import '../../widgets/common/payment_method_icon.dart';
@@ -80,6 +81,9 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
   void initState() {
     super.initState();
     _tabIndex = widget.startOnSignup ? 1 : 0;
+    // Default the preferred language to whatever the app is currently showing
+    // so the member's onboarding language carries through.
+    _selectedLanguage = ref.read(languageProvider).locale.languageCode;
   }
 
   @override
@@ -123,9 +127,10 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
   // ── Phone Auth ────────────────────────────────────────────────
 
   Future<void> _sendOtp() async {
+    final l10n = AppLocalizations.of(context);
     final raw = _phoneCtrl.text.trim().replaceAll(' ', '');
-    if (raw.isEmpty) {
-      setState(() => _errorMsg = 'Entrez votre numéro de téléphone');
+    if (!AppUtils.isValidCameroonPhone(raw)) {
+      setState(() => _errorMsg = l10n.invalidPhone);
       return;
     }
     setState(() { _loading = true; _errorMsg = null; });
@@ -148,7 +153,7 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
         if (!mounted) return;
         setState(() {
           _loading = false;
-          _errorMsg = error.message ?? 'Erreur lors de l\'envoi';
+          _errorMsg = authErrorMessage(l10n, error);
         });
       },
     );
@@ -164,6 +169,7 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
   }
 
   Future<void> _verifyOtp() async {
+    final l10n = AppLocalizations.of(context);
     final otp = _otpCtrls.map((c) => c.text).join();
     if (otp.length < 6 || _verificationId == null) return;
     setState(() { _loading = true; _errorMsg = null; });
@@ -172,19 +178,22 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
         verificationId: _verificationId!,
         smsCode: otp,
       );
-      _navigateByRole(user);
-    } on FirebaseAuthException catch (e) {
-      if (!mounted) return;
-      setState(() { _loading = false; _errorMsg = e.message; });
+      if (user != null) {
+        _navigateByRole(user);
+      } else {
+        // New user — router will redirect to /complete-profile via auth stream
+        if (mounted) setState(() => _loading = false);
+      }
     } catch (e) {
       if (!mounted) return;
-      setState(() { _loading = false; _errorMsg = e.toString(); });
+      setState(() { _loading = false; _errorMsg = authErrorMessage(l10n, e); });
     }
   }
 
   // ── Google Auth ───────────────────────────────────────────────
 
   Future<void> _signInWithGoogle() async {
+    final l10n = AppLocalizations.of(context);
     setState(() { _loading = true; _errorMsg = null; });
     try {
       final user = await _authRepo.signInWithGoogle();
@@ -195,13 +204,20 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
       }
     } catch (e) {
       if (!mounted) return;
-      setState(() { _loading = false; _errorMsg = e.toString(); });
+      setState(() { _loading = false; _errorMsg = authErrorMessage(l10n, e); });
     }
   }
 
   // ── Apple Auth ────────────────────────────────────────────────
 
   Future<void> _signInWithApple() async {
+    final l10n = AppLocalizations.of(context);
+    // Apple Sign-In isn't configured yet (empty Service ID) — fail gracefully
+    // instead of throwing so the button stays friendly.
+    if (AppConstants.appleServiceId.isEmpty) {
+      setState(() => _errorMsg = l10n.appleComingSoon);
+      return;
+    }
     setState(() { _loading = true; _errorMsg = null; });
     try {
       final user = await _authRepo.signInWithApple();
@@ -212,16 +228,14 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
       }
     } catch (e) {
       if (!mounted) return;
-      setState(() {
-        _loading = false;
-        _errorMsg = e.toString().replaceFirst('Exception: ', '');
-      });
+      setState(() { _loading = false; _errorMsg = authErrorMessage(l10n, e); });
     }
   }
 
   // ── Email Auth ────────────────────────────────────────────────
 
   Future<void> _signInWithEmail() async {
+    final l10n = AppLocalizations.of(context);
     if (!_loginFormKey.currentState!.validate()) return;
     setState(() { _loading = true; _errorMsg = null; });
     try {
@@ -230,18 +244,102 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
         password: _pwCtrl.text,
       );
       _navigateByRole(user);
-    } on FirebaseAuthException catch (e) {
-      if (!mounted) return;
-      setState(() { _loading = false; _errorMsg = e.message; });
     } catch (e) {
       if (!mounted) return;
-      setState(() { _loading = false; _errorMsg = e.toString(); });
+      setState(() { _loading = false; _errorMsg = authErrorMessage(l10n, e); });
     }
+  }
+
+  // ── Password reset ────────────────────────────────────────────
+
+  Future<void> _showResetPasswordDialog() async {
+    final l10n = AppLocalizations.of(context);
+    final resetCtrl = TextEditingController(text: _emailCtrl.text.trim());
+    final formKey = GlobalKey<FormState>();
+    var sending = false;
+
+    await showDialog<void>(
+      context: context,
+      builder: (dialogContext) {
+        return StatefulBuilder(
+          builder: (context, setDialogState) {
+            return AlertDialog(
+              title: Text(l10n.resetPasswordTitle),
+              content: Form(
+                key: formKey,
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Text(
+                      l10n.resetPasswordHint,
+                      style: const TextStyle(
+                          fontSize: 13, color: AppColors.textGray),
+                    ),
+                    const SizedBox(height: 16),
+                    TextFormField(
+                      controller: resetCtrl,
+                      keyboardType: TextInputType.emailAddress,
+                      autofocus: true,
+                      decoration: InputDecoration(
+                        labelText: l10n.email,
+                        prefixIcon: const Icon(Icons.email_outlined),
+                      ),
+                      validator: (v) =>
+                          (v?.trim().isEmpty ?? true) ? l10n.fieldRequired : null,
+                    ),
+                  ],
+                ),
+              ),
+              actions: [
+                TextButton(
+                  onPressed:
+                      sending ? null : () => Navigator.of(dialogContext).pop(),
+                  child: Text(l10n.cancel),
+                ),
+                ElevatedButton(
+                  onPressed: sending
+                      ? null
+                      : () async {
+                          if (!formKey.currentState!.validate()) return;
+                          final messenger = ScaffoldMessenger.of(context);
+                          setDialogState(() => sending = true);
+                          try {
+                            await _authRepo
+                                .resetPassword(resetCtrl.text.trim());
+                            if (dialogContext.mounted) {
+                              Navigator.of(dialogContext).pop();
+                            }
+                            messenger.showSnackBar(
+                              SnackBar(content: Text(l10n.resetEmailSent)),
+                            );
+                          } catch (e) {
+                            setDialogState(() => sending = false);
+                            if (mounted) {
+                              setState(() =>
+                                  _errorMsg = authErrorMessage(l10n, e));
+                            }
+                            if (dialogContext.mounted) {
+                              Navigator.of(dialogContext).pop();
+                            }
+                          }
+                        },
+                  child: sending
+                      ? const _SmallLoader()
+                      : Text(l10n.sendResetLink),
+                ),
+              ],
+            );
+          },
+        );
+      },
+    );
+    resetCtrl.dispose();
   }
 
   // ── Sign Up ───────────────────────────────────────────────────
 
   Future<void> _createAccount() async {
+    final l10n = AppLocalizations.of(context);
     setState(() { _loading = true; _errorMsg = null; });
     try {
       final user = await _authRepo.signUp(
@@ -258,17 +356,11 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
         preferredPayment: _selectedPayment,
         language: _selectedLanguage,
       );
-      NotificationService.instance.notifyWelcome(
-        userId: user.id,
-        firstName: user.firstName,
-      ).ignore();
+      // The welcome push is sent server-side by the onUserWelcome Cloud Function.
       _navigateByRole(user);
-    } on FirebaseAuthException catch (e) {
-      if (!mounted) return;
-      setState(() { _loading = false; _errorMsg = e.message; });
     } catch (e) {
       if (!mounted) return;
-      setState(() { _loading = false; _errorMsg = e.toString(); });
+      setState(() { _loading = false; _errorMsg = authErrorMessage(l10n, e); });
     }
   }
 
@@ -337,14 +429,11 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
                           ),
                         ],
                       ),
-                      child: Center(
-                        child: Text(
-                          AppConstants.acronym,
-                          style: GoogleFonts.playfairDisplay(
-                            color: AppColors.primary,
-                            fontWeight: FontWeight.bold,
-                            fontSize: 18,
-                          ),
+                      child: Padding(
+                        padding: const EdgeInsets.all(4),
+                        child: Image.asset(
+                          'assets/images/cmcda_logo.png',
+                          fit: BoxFit.contain,
                         ),
                       ),
                     ),
@@ -660,7 +749,7 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
                         minimumSize: Size.zero,
                         tapTargetSize: MaterialTapTargetSize.shrinkWrap,
                       ),
-                      onPressed: () {},
+                      onPressed: _loading ? null : _showResetPasswordDialog,
                       child: Text(l10n.forgotPassword),
                     ),
                   ),
@@ -1115,11 +1204,9 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
             controller: _deptCtrl,
             textCapitalization: TextCapitalization.words,
             decoration: InputDecoration(
-              labelText: l10n.department,
+              labelText: '${l10n.department} (${l10n.optional})',
               prefixIcon: const Icon(Icons.apartment_outlined),
             ),
-            validator: (v) =>
-                (v?.trim().isEmpty ?? true) ? l10n.fieldRequired : null,
           ),
           const SizedBox(height: 12),
           TextFormField(
@@ -1172,8 +1259,8 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
     final payments = [
       (AppConstants.paymentMtnMomo, paymentMethodIcon(AppConstants.paymentMtnMomo, size: 24), l10n.mtnMomo),
       (AppConstants.paymentOrangeMoney, paymentMethodIcon(AppConstants.paymentOrangeMoney, size: 24), l10n.orangeMoney),
-      (AppConstants.paymentCash, const Text('💵', style: TextStyle(fontSize: 20)), l10n.cash),
-      (AppConstants.paymentBankTransfer, const Text('🏦', style: TextStyle(fontSize: 20)), l10n.bankTransfer),
+      (AppConstants.paymentCash, paymentMethodIcon(AppConstants.paymentCash, size: 24), l10n.cash),
+      (AppConstants.paymentBankTransfer, paymentMethodIcon(AppConstants.paymentBankTransfer, size: 24), l10n.bankTransfer),
     ];
 
     final languages = [
@@ -1185,6 +1272,14 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
+        Text(
+          l10n.preferencesEditableLater,
+          style: Theme.of(context)
+              .textTheme
+              .labelSmall
+              ?.copyWith(color: AppColors.textGray),
+        ),
+        const SizedBox(height: 16),
         // Frequency grid
         Text(
           l10n.preferredFrequency,

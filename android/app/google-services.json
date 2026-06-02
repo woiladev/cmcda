@@ -50,6 +50,30 @@
       },
       "oauth_client": [
         {
+          "client_id": "1050677298259-5vgl0pfufq2jj08hdp2bhhdhc7qa2m6q.apps.googleusercontent.com",
+          "client_type": 1,
+          "android_info": {
+            "package_name": "com.woilatech.cmcda_platform",
+            "certificate_hash": "5f1fb9c48b5c078977a0f5c9faa795d930ffbc23"
+          }
+        },
+        {
+          "client_id": "1050677298259-anb4b268eirnesbjqucg80a9lt5g177s.apps.googleusercontent.com",
+          "client_type": 1,
+          "android_info": {
+            "package_name": "com.woilatech.cmcda_platform",
+            "certificate_hash": "5b7f1b2db737a3f281b1eb7819352b7b76159e35"
+          }
+        },
+        {
+          "client_id": "1050677298259-fa3avv47c9pcp919tpi942hnhlgbi7gd.apps.googleusercontent.com",
+          "client_type": 1,
+          "android_info": {
+            "package_name": "com.woilatech.cmcda_platform",
+            "certificate_hash": "300fc31fd9898f4991550a40bfcd08e39e05c4e1"
+          }
+        },
+        {
           "client_id": "1050677298259-bb8gb12hfag1qs342oq767qjoiukjajm.apps.googleusercontent.com",
           "client_type": 3
         }

@@ -13,6 +13,9 @@ import '../../../core/utils/app_utils.dart';
 import '../../../data/models/contribution_model.dart';
 import '../../../data/models/user_model.dart';
 import '../../../data/repositories/contribution_repository.dart';
+import '../../../data/repositories/notification_repository.dart';
+import '../../widgets/common/app_animations.dart';
+import '../../widgets/common/app_shimmer.dart';
 import '../../widgets/common/super_badge_avatar.dart';
 
 // ── Providers ─────────────────────────────────────────────────
@@ -28,8 +31,11 @@ final _platformTotalProvider = StreamProvider.autoDispose<double>(
   (ref) => _contributionRepo.streamPlatformTotal(),
 );
 
-final _memberCountProvider = StreamProvider.autoDispose<int>(
-  (ref) => _contributionRepo.streamMemberCount(),
+final _memberUnreadCountProvider =
+    StreamProvider.autoDispose.family<int, String>(
+  (ref, uid) => NotificationRepository()
+      .streamNotifications(uid)
+      .map((list) => list.where((n) => !n.read).length),
 );
 
 // ── Screen ────────────────────────────────────────────────────
@@ -169,7 +175,6 @@ class _MemberDashboardScreenState extends ConsumerState<MemberDashboardScreen>
     final delayCount = contributions.where((c) => c.isPending).length;
     final isActive = delayCount == 0;
     final platformTotal = ref.watch(_platformTotalProvider).valueOrNull ?? 0.0;
-    final memberCount = ref.watch(_memberCountProvider).valueOrNull ?? 0;
 
     return Container(
       padding: EdgeInsets.fromLTRB(
@@ -188,43 +193,17 @@ class _MemberDashboardScreenState extends ConsumerState<MemberDashboardScreen>
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          // Top row: avatar + name | admin badge + bell
+          // Top row: avatar | admin badge + bell
           Row(
             mainAxisAlignment: MainAxisAlignment.spaceBetween,
             crossAxisAlignment: CrossAxisAlignment.center,
             children: [
-              Row(
-                children: [
-                  SuperBadgeAvatar(
-                    initials: user.initials,
-                    isSuperContributor: user.isSuperContributor,
-                    size: 44,
-                    backgroundColor: AppColors.gold,
-                    textColor: AppColors.primaryDark,
-                  ),
-                  const SizedBox(width: AppConstants.spaceMD),
-                  Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text(
-                        '${l.welcome} 👋',
-                        style: GoogleFonts.plusJakartaSans(
-                          fontSize: 11,
-                          fontWeight: FontWeight.w600,
-                          color: Colors.white.withValues(alpha: 0.7),
-                        ),
-                      ),
-                      Text(
-                        user.firstName,
-                        style: GoogleFonts.plusJakartaSans(
-                          fontSize: 16,
-                          fontWeight: FontWeight.w700,
-                          color: Colors.white,
-                        ),
-                      ),
-                    ],
-                  ),
-                ],
+              SuperBadgeAvatar(
+                initials: user.initials,
+                isSuperContributor: user.isSuperContributor,
+                size: 44,
+                backgroundColor: AppColors.gold,
+                textColor: AppColors.primaryDark,
               ),
               Row(
                 children: [
@@ -251,7 +230,7 @@ class _MemberDashboardScreenState extends ConsumerState<MemberDashboardScreen>
                                 color: AppColors.gold, size: 14),
                             const SizedBox(width: 4),
                             Text(
-                              'Admin',
+                              l.adminBadge,
                               style: GoogleFonts.plusJakartaSans(
                                 fontSize: 11,
                                 fontWeight: FontWeight.w700,
@@ -264,19 +243,11 @@ class _MemberDashboardScreenState extends ConsumerState<MemberDashboardScreen>
                     ),
                     const SizedBox(width: AppConstants.spaceSM),
                   ],
-                  GestureDetector(
-                    onTap: () => context.go(AppRoutes.notifications),
-                    child: Container(
-                      width: 40,
-                      height: 40,
-                      decoration: BoxDecoration(
-                        color: Colors.white.withValues(alpha: 0.1),
-                        shape: BoxShape.circle,
-                      ),
-                      child: const Icon(Icons.notifications_rounded,
-                          color: Colors.white, size: 20),
-                    ),
-                  ),
+                  const _SupportIcon(),
+                  const SizedBox(width: AppConstants.spaceSM),
+                  _ReminderIcon(hasUnpaidDue: delayCount > 0),
+                  const SizedBox(width: AppConstants.spaceSM),
+                  _NotificationBell(userId: user.id),
                 ],
               ),
             ],
@@ -287,79 +258,70 @@ class _MemberDashboardScreenState extends ConsumerState<MemberDashboardScreen>
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
+                // Label + status chip on one line
                 Row(
-                  crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     Expanded(
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Text(
-                            'TOTAL CONTRIBUÉ',
-                            style: GoogleFonts.plusJakartaSans(
-                              fontSize: 10,
-                              fontWeight: FontWeight.w600,
-                              color: Colors.white.withValues(alpha: 0.65),
-                              letterSpacing: 0.5,
-                            ),
-                          ),
-                          const SizedBox(height: 2),
-                          Text(
-                            AppUtils.formatAmount(totalAll),
-                            style: GoogleFonts.playfairDisplay(
-                              fontSize: 24,
-                              fontWeight: FontWeight.w700,
-                              color: Colors.white,
-                            ),
-                          ),
-                          const SizedBox(height: 2),
-                          Text(
-                            'N° ${user.memberNumber}',
-                            style: GoogleFonts.plusJakartaSans(
-                              fontSize: 11,
-                              color: Colors.white.withValues(alpha: 0.55),
-                            ),
-                          ),
-                        ],
+                      child: Text(
+                        l.totalContributedLabel.toUpperCase(),
+                        style: GoogleFonts.plusJakartaSans(
+                          fontSize: 10,
+                          fontWeight: FontWeight.w700,
+                          color: Colors.white.withValues(alpha: 0.65),
+                          letterSpacing: 0.6,
+                        ),
+                        overflow: TextOverflow.ellipsis,
                       ),
                     ),
-                    // Status chip (top-right of card)
-                    Container(
-                      padding: const EdgeInsets.symmetric(
-                          horizontal: 10, vertical: 5),
-                      decoration: BoxDecoration(
-                        color: (isActive ? AppColors.success : AppColors.warning)
-                            .withValues(alpha: 0.25),
-                        borderRadius:
-                            BorderRadius.circular(AppConstants.radiusFull),
-                        border: Border.all(
-                          color: (isActive ? AppColors.success : AppColors.warning)
-                              .withValues(alpha: 0.5),
+                    const SizedBox(width: AppConstants.spaceSM),
+                    _StatusChip(isActive: isActive, l: l),
+                  ],
+                ),
+                const SizedBox(height: 6),
+                // Hero amount — full width, never wraps
+                FittedBox(
+                  fit: BoxFit.scaleDown,
+                  alignment: Alignment.centerLeft,
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    crossAxisAlignment: CrossAxisAlignment.baseline,
+                    textBaseline: TextBaseline.alphabetic,
+                    children: [
+                      AnimatedCountUp(
+                        value: totalAll.toDouble(),
+                        builder: (context, v) => Text(
+                          AppUtils.formatAmount(v.round())
+                              .replaceAll(' FCFA', ''),
+                          style: GoogleFonts.playfairDisplay(
+                            fontSize: 30,
+                            fontWeight: FontWeight.w800,
+                            color: Colors.white,
+                            height: 1.0,
+                          ),
                         ),
                       ),
-                      child: Row(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          Icon(
-                            isActive
-                                ? Icons.check_circle_rounded
-                                : Icons.schedule_rounded,
-                            color: Colors.white,
-                            size: 12,
+                      const SizedBox(width: 6),
+                      Padding(
+                        padding: const EdgeInsets.only(bottom: 2),
+                        child: Text(
+                          'FCFA',
+                          style: GoogleFonts.plusJakartaSans(
+                            fontSize: 13,
+                            fontWeight: FontWeight.w600,
+                            color: Colors.white.withValues(alpha: 0.7),
                           ),
-                          const SizedBox(width: 4),
-                          Text(
-                            isActive ? l.memberActiveStatus : l.memberLateStatus,
-                            style: GoogleFonts.plusJakartaSans(
-                              fontSize: 10,
-                              fontWeight: FontWeight.w700,
-                              color: Colors.white,
-                            ),
-                          ),
-                        ],
+                        ),
                       ),
-                    ),
-                  ],
+                    ],
+                  ),
+                ),
+                const SizedBox(height: 4),
+                Text(
+                  'N° ${user.memberNumber}',
+                  style: GoogleFonts.plusJakartaSans(
+                    fontSize: 11,
+                    color: Colors.white.withValues(alpha: 0.55),
+                  ),
                 ),
                 const SizedBox(height: AppConstants.spaceMD),
                 // 3 mini-stats
@@ -393,12 +355,13 @@ class _MemberDashboardScreenState extends ConsumerState<MemberDashboardScreen>
                 // Platform progress
                 _PlatformProgressInline(
                   total: platformTotal,
-                  memberCount: memberCount,
                   l: l,
                 ),
               ],
             ),
           ),
+          const SizedBox(height: AppConstants.spaceMD),
+          _AnnualProgressCard(contributionsAsync: contributionsAsync),
         ],
       ),
     );
@@ -414,7 +377,7 @@ class _MemberDashboardScreenState extends ConsumerState<MemberDashboardScreen>
             Expanded(
               child: _ActionCard(
                 icon: Icons.volunteer_activism_rounded,
-                label: 'Contribuer',
+                label: l.contribute,
                 onTap: () => context.go(AppRoutes.payment),
               ),
             ),
@@ -509,7 +472,10 @@ class _MemberDashboardScreenState extends ConsumerState<MemberDashboardScreen>
               children: [
                 for (int i = 0; i < recent.length; i++) ...[
                   if (i > 0) const SizedBox(height: AppConstants.spaceSM),
-                  _HistoryItem(contribution: recent[i]),
+                  FadeSlideIn(
+                    delay: Duration(milliseconds: i * 70),
+                    child: _HistoryItem(contribution: recent[i]),
+                  ),
                 ],
               ],
             );
@@ -519,6 +485,272 @@ class _MemberDashboardScreenState extends ConsumerState<MemberDashboardScreen>
     );
   }
 
+}
+
+class _AnnualProgressCard extends StatelessWidget {
+  final AsyncValue<List<ContributionModel>> contributionsAsync;
+  const _AnnualProgressCard({required this.contributionsAsync});
+
+  @override
+  Widget build(BuildContext context) {
+    final l = AppLocalizations.of(context);
+    final contributions = contributionsAsync.valueOrNull ?? const [];
+    final year = DateTime.now().year;
+    final ytdTotal = contributions
+        .where((c) =>
+            c.isConfirmed && c.createdAt.toDate().year == year)
+        .fold<int>(0, (sum, c) => sum + c.amount);
+    final progress = AppUtils.annualProgress(ytdTotal);
+    final remaining = (AppConstants.amountAnnual - ytdTotal).clamp(0, AppConstants.amountAnnual);
+
+    return GestureDetector(
+      onTap: () => context.go(AppRoutes.payment),
+      child: _GlassCard(
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                Container(
+                  width: 32,
+                  height: 32,
+                  decoration: BoxDecoration(
+                    color: AppColors.gold.withValues(alpha: 0.2),
+                    borderRadius:
+                        BorderRadius.circular(AppConstants.radiusMD),
+                  ),
+                  child: const Icon(Icons.flag_rounded,
+                      color: AppColors.gold, size: 18),
+                ),
+                const SizedBox(width: AppConstants.spaceSM),
+                Expanded(
+                  child: Text(
+                    l.annualGoal,
+                    style: GoogleFonts.plusJakartaSans(
+                      fontSize: 13,
+                      fontWeight: FontWeight.w700,
+                      color: Colors.white,
+                    ),
+                  ),
+                ),
+                Text(
+                  '${(progress * 100).toStringAsFixed(0)}%',
+                  style: GoogleFonts.playfairDisplay(
+                    fontSize: 18,
+                    fontWeight: FontWeight.w800,
+                    color: AppColors.gold,
+                  ),
+                ),
+                const SizedBox(width: 6),
+                Icon(
+                  Icons.chevron_right_rounded,
+                  color: Colors.white.withValues(alpha: 0.6),
+                  size: 20,
+                ),
+              ],
+            ),
+            const SizedBox(height: AppConstants.spaceSM),
+            ClipRRect(
+              borderRadius:
+                  BorderRadius.circular(AppConstants.radiusFull),
+              child: LinearProgressIndicator(
+                value: progress,
+                minHeight: 8,
+                backgroundColor: Colors.white.withValues(alpha: 0.15),
+                valueColor:
+                    const AlwaysStoppedAnimation<Color>(AppColors.gold),
+              ),
+            ),
+            const SizedBox(height: AppConstants.spaceSM),
+            Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                Flexible(
+                  child: Text(
+                    '${AppUtils.formatAmount(ytdTotal)} / ${AppUtils.formatAmount(AppConstants.amountAnnual)}',
+                    style: GoogleFonts.plusJakartaSans(
+                      fontSize: 11,
+                      color: Colors.white.withValues(alpha: 0.6),
+                    ),
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                ),
+                if (remaining > 0) ...[
+                  const SizedBox(width: AppConstants.spaceXS),
+                  Flexible(
+                    child: Text(
+                      '${AppUtils.formatAmount(remaining)} ${l.remainingSuffix}',
+                      style: GoogleFonts.plusJakartaSans(
+                        fontSize: 11,
+                        fontWeight: FontWeight.w600,
+                        color: AppColors.gold,
+                      ),
+                      overflow: TextOverflow.ellipsis,
+                      textAlign: TextAlign.end,
+                    ),
+                  ),
+                ],
+              ],
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _SupportIcon extends StatelessWidget {
+  const _SupportIcon();
+
+  @override
+  Widget build(BuildContext context) {
+    return GestureDetector(
+      onTap: () => context.push(AppRoutes.help),
+      child: Container(
+        width: 40,
+        height: 40,
+        decoration: BoxDecoration(
+          color: Colors.white.withValues(alpha: 0.1),
+          shape: BoxShape.circle,
+        ),
+        child: const Icon(Icons.help_outline_rounded,
+            color: Colors.white, size: 20),
+      ),
+    );
+  }
+}
+
+class _ReminderIcon extends StatelessWidget {
+  final bool hasUnpaidDue;
+  const _ReminderIcon({required this.hasUnpaidDue});
+
+  @override
+  Widget build(BuildContext context) {
+    return GestureDetector(
+      onTap: () => context.push(AppRoutes.reminders),
+      child: Stack(
+        clipBehavior: Clip.none,
+        children: [
+          Container(
+            width: 40,
+            height: 40,
+            decoration: BoxDecoration(
+              color: Colors.white.withValues(alpha: 0.1),
+              shape: BoxShape.circle,
+            ),
+            child: const Icon(Icons.event_available_rounded,
+                color: Colors.white, size: 20),
+          ),
+          if (hasUnpaidDue)
+            Positioned(
+              top: -2,
+              right: -2,
+              child: Container(
+                width: 12,
+                height: 12,
+                decoration: BoxDecoration(
+                  color: AppColors.error,
+                  shape: BoxShape.circle,
+                  border: Border.all(color: Colors.white, width: 1.5),
+                ),
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+}
+
+class _NotificationBell extends ConsumerWidget {
+  final String userId;
+  const _NotificationBell({required this.userId});
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final unread = ref.watch(_memberUnreadCountProvider(userId)).valueOrNull ?? 0;
+    return GestureDetector(
+      onTap: () => context.go(AppRoutes.notifications),
+      child: Stack(
+        clipBehavior: Clip.none,
+        children: [
+          Container(
+            width: 40,
+            height: 40,
+            decoration: BoxDecoration(
+              color: Colors.white.withValues(alpha: 0.1),
+              shape: BoxShape.circle,
+            ),
+            child: const Icon(Icons.notifications_rounded,
+                color: Colors.white, size: 20),
+          ),
+          if (unread > 0)
+            Positioned(
+              top: -2,
+              right: -2,
+              child: Container(
+                constraints: const BoxConstraints(minWidth: 18, minHeight: 18),
+                padding: const EdgeInsets.symmetric(horizontal: 5),
+                decoration: BoxDecoration(
+                  color: AppColors.error,
+                  borderRadius:
+                      BorderRadius.circular(AppConstants.radiusFull),
+                  border: Border.all(color: Colors.white, width: 1.5),
+                ),
+                child: Center(
+                  child: Text(
+                    unread > 99 ? '99+' : '$unread',
+                    style: GoogleFonts.plusJakartaSans(
+                      fontSize: 10,
+                      fontWeight: FontWeight.w700,
+                      color: Colors.white,
+                      height: 1.0,
+                    ),
+                  ),
+                ),
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+}
+
+class _StatusChip extends StatelessWidget {
+  final bool isActive;
+  final AppLocalizations l;
+  const _StatusChip({required this.isActive, required this.l});
+
+  @override
+  Widget build(BuildContext context) {
+    final color = isActive ? AppColors.success : AppColors.warning;
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+      decoration: BoxDecoration(
+        color: color.withValues(alpha: 0.25),
+        borderRadius: BorderRadius.circular(AppConstants.radiusFull),
+        border: Border.all(color: color.withValues(alpha: 0.5)),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(
+            isActive ? Icons.check_circle_rounded : Icons.schedule_rounded,
+            color: Colors.white,
+            size: 12,
+          ),
+          const SizedBox(width: 4),
+          Text(
+            isActive ? l.memberActiveStatus : l.memberLateStatus,
+            style: GoogleFonts.plusJakartaSans(
+              fontSize: 10,
+              fontWeight: FontWeight.w700,
+              color: Colors.white,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
 }
 
 class _GlassCard extends StatelessWidget {
@@ -604,7 +836,7 @@ class _ActionCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return GestureDetector(
+    return AnimatedTapScale(
       onTap: onTap,
       child: Container(
         padding: const EdgeInsets.symmetric(
@@ -658,9 +890,10 @@ class _HistoryItem extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final l = AppLocalizations.of(context);
     final isConfirmed = contribution.isConfirmed;
     final date = AppUtils.formatDate(contribution.createdAt.toDate());
-    final methodLabel = AppUtils.paymentMethodLabel(contribution.paymentMethod);
+    final methodLabel = l.paymentMethodName(contribution.paymentMethod);
 
     return Container(
       padding: const EdgeInsets.all(AppConstants.spaceMD),
@@ -735,7 +968,7 @@ class _HistoryItem extends StatelessWidget {
                       BorderRadius.circular(AppConstants.radiusFull),
                 ),
                 child: Text(
-                  isConfirmed ? 'Confirmé' : 'En attente',
+                  isConfirmed ? l.confirmed : l.pending,
                   style: GoogleFonts.plusJakartaSans(
                     fontSize: 10,
                     fontWeight: FontWeight.w600,
@@ -804,12 +1037,10 @@ class _EmptyHistory extends StatelessWidget {
 
 class _PlatformProgressInline extends StatelessWidget {
   final double total;
-  final int memberCount;
   final AppLocalizations l;
 
   const _PlatformProgressInline({
     required this.total,
-    required this.memberCount,
     required this.l,
   });
 
@@ -821,17 +1052,6 @@ class _PlatformProgressInline extends StatelessWidget {
       return '${(amount / 1e6).toStringAsFixed(2).replaceAll('.', ',')} M FCFA';
     }
     return AppUtils.formatAmount(amount.toInt());
-  }
-
-  String _formatCount(int count) {
-    if (count >= 1000000) return '${(count / 1000000).toStringAsFixed(2)} M';
-    final s = count.toString();
-    final buf = StringBuffer();
-    for (int i = 0; i < s.length; i++) {
-      if (i > 0 && (s.length - i) % 3 == 0) buf.write(' ');
-      buf.write(s[i]);
-    }
-    return buf.toString();
   }
 
   @override
@@ -902,76 +1122,7 @@ class _PlatformProgressInline extends StatelessWidget {
               ),
             ),
             Text(
-              '36,5 Mrd FCFA',
-              style: GoogleFonts.plusJakartaSans(
-                fontSize: 10,
-                color: Colors.white.withValues(alpha: 0.5),
-              ),
-            ),
-          ],
-        ),
-        const SizedBox(height: AppConstants.spaceMD),
-        // ── Member count bar ─────────────────────────────────
-        Row(
-          mainAxisAlignment: MainAxisAlignment.spaceBetween,
-          crossAxisAlignment: CrossAxisAlignment.end,
-          children: [
-            Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  l.membersGoal.toUpperCase(),
-                  style: GoogleFonts.plusJakartaSans(
-                    fontSize: 10,
-                    fontWeight: FontWeight.w700,
-                    color: AppColors.gold,
-                    letterSpacing: 0.5,
-                  ),
-                ),
-                const SizedBox(height: 2),
-                Text(
-                  _formatCount(memberCount),
-                  style: GoogleFonts.plusJakartaSans(
-                    fontSize: 15,
-                    fontWeight: FontWeight.w700,
-                    color: Colors.white,
-                  ),
-                ),
-              ],
-            ),
-            Text(
-              '${((memberCount / AppConstants.targetMembers) * 100).toStringAsFixed(3)}%',
-              style: GoogleFonts.plusJakartaSans(
-                fontSize: 13,
-                fontWeight: FontWeight.w700,
-                color: AppColors.gold,
-              ),
-            ),
-          ],
-        ),
-        const SizedBox(height: AppConstants.spaceSM),
-        ClipRRect(
-          borderRadius: BorderRadius.circular(AppConstants.radiusFull),
-          child: LinearProgressIndicator(
-            value: (memberCount / AppConstants.targetMembers).clamp(0.0, 1.0),
-            minHeight: 6,
-            backgroundColor: Colors.white.withValues(alpha: 0.15),
-            valueColor: const AlwaysStoppedAnimation<Color>(AppColors.gold),
-          ),
-        ),
-        const SizedBox(height: AppConstants.spaceSM),
-        Row(
-          mainAxisAlignment: MainAxisAlignment.spaceBetween,
-          children: [
-            Text(
-              l.reachedLabel,
-              style: GoogleFonts.plusJakartaSans(
-                fontSize: 10,
-                color: Colors.white.withValues(alpha: 0.5),
-              ),
-            ),
-            Text(
-              '1 000 000',
+              '${(AppConstants.targetAnnualRevenue / 1000000000).toStringAsFixed(1).replaceAll('.', ',')} Mrd FCFA',
               style: GoogleFonts.plusJakartaSans(
                 fontSize: 10,
                 color: Colors.white.withValues(alpha: 0.5),
@@ -989,23 +1140,7 @@ class _HistoryShimmer extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Column(
-      children: List.generate(
-        3,
-        (i) => Padding(
-          padding: EdgeInsets.only(
-            bottom: i < 2 ? AppConstants.spaceSM : 0,
-          ),
-          child: Container(
-            height: 72,
-            decoration: BoxDecoration(
-              color: AppColors.border.withValues(alpha: 0.5),
-              borderRadius: BorderRadius.circular(AppConstants.radiusLG),
-            ),
-          ),
-        ),
-      ),
-    );
+    return const ShimmerList();
   }
 }
 

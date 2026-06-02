@@ -1,4 +1,7 @@
+import 'dart:async';
+
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:cloud_functions/cloud_functions.dart';
 import '../models/focal_report_model.dart';
 import '../../core/constants/app_constants.dart';
 
@@ -26,23 +29,34 @@ class FocalReportRepository {
             s.docs.map((d) => FocalReportModel.fromFirestore(d)).toList());
   }
 
-  Future<void> validateReport(String id, String adminId) async {
-    await _col.doc(id).update({
-      'status': FocalReportModel.statusValidated,
-      'validatedBy': adminId,
-    });
+  /// Accepts a focal report via the super-admin-gated Cloud Function, which
+  /// confirms all of its still-pending cash contributions (crediting the
+  /// wallets via the onContributionConfirmed trigger). Returns
+  /// `{ confirmed: int, total: int }`.
+  Future<({int confirmed, int total})> validateReport(String id) async {
+    final callable = FirebaseFunctions.instanceFor(region: 'europe-west1')
+        .httpsCallable('validateFocalReport');
+    final res = await callable.call<dynamic>({'reportId': id});
+    final data = Map<String, dynamic>.from(res.data as Map);
+    return (
+      confirmed: (data['confirmed'] as num?)?.toInt() ?? 0,
+      total: (data['total'] as num?)?.toInt() ?? 0,
+    );
   }
 
-  Future<void> rejectReport(String id, String adminId, String reason) async {
-    await _col.doc(id).update({
-      'status': FocalReportModel.statusRejected,
-      'validatedBy': adminId,
-      'notes': reason,
-    });
+  /// Rejects a focal report via the super-admin-gated Cloud Function, which
+  /// also fails the report's still-pending contributions.
+  Future<void> rejectReport(String id, String reason) async {
+    final callable = FirebaseFunctions.instanceFor(region: 'europe-west1')
+        .httpsCallable('rejectFocalReport');
+    await callable.call<dynamic>({'reportId': id, 'reason': reason});
   }
 
   // ── Write ─────────────────────────────────────────────────
 
+  /// Offline-safe: the doc id is generated locally and the write is
+  /// fire-and-forget, so a focal officer can finalize a field session with no
+  /// connection. The report (and its linked contributions) sync on reconnect.
   Future<String> createReport({
     required String focalId,
     required String focalName,
@@ -54,8 +68,9 @@ class FocalReportRepository {
     String? notes,
   }) async {
     final now = Timestamp.now();
+    final ref = _col.doc(); // local id, no network round-trip
     final data = FocalReportModel(
-      id: '',
+      id: ref.id,
       focalId: focalId,
       focalName: focalName,
       location: location,
@@ -68,15 +83,16 @@ class FocalReportRepository {
       createdAt: now,
       notes: notes?.isNotEmpty == true ? notes : null,
     );
-    final doc = await _col.add(data.toFirestore());
-    return doc.id;
+    unawaited(ref.set(data.toFirestore()));
+    return ref.id;
   }
 
   Future<void> submitReport(String id) async {
-    await _col.doc(id).update({'status': FocalReportModel.statusSubmitted});
+    unawaited(
+        _col.doc(id).update({'status': FocalReportModel.statusSubmitted}));
   }
 
   Future<void> updateReport(String id, Map<String, dynamic> fields) async {
-    await _col.doc(id).update(fields);
+    unawaited(_col.doc(id).update(fields));
   }
 }

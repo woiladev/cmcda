@@ -16,7 +16,7 @@ class UserModel {
   final String? city;
   final String? quarter;
   final String? focalZone;
-  final String? fcmToken;
+  final List<String> fcmTokens;
   final String preferredPayment;
   final String preferredFrequency;
   final String language;
@@ -39,7 +39,7 @@ class UserModel {
     this.quarter,
     this.avatarUrl,
     this.focalZone,
-    this.fcmToken,
+    this.fcmTokens = const [],
     required this.preferredPayment,
     required this.preferredFrequency,
     required this.language,
@@ -65,7 +65,7 @@ class UserModel {
       city: d['city'] as String?,
       quarter: d['quarter'] as String?,
       focalZone: d['focalZone'] as String?,
-      fcmToken: d['fcmToken'] as String?,
+      fcmTokens: _parseTokens(d),
       preferredPayment: d['preferredPayment'] as String? ?? AppConstants.paymentMtnMomo,
       preferredFrequency: d['preferredFrequency'] as String? ?? AppConstants.periodMonthly,
       language: d['language'] as String? ?? AppConstants.defaultLocale,
@@ -73,6 +73,17 @@ class UserModel {
       createdAt: d['createdAt'] as Timestamp? ?? Timestamp.now(),
       updatedAt: d['updatedAt'] as Timestamp? ?? Timestamp.now(),
     );
+  }
+
+  // Reads the multi-device token array, falling back to the legacy single
+  // `fcmToken` string for user docs written before the array migration.
+  static List<String> _parseTokens(Map<String, dynamic> d) {
+    final raw = d['fcmTokens'];
+    if (raw is List) {
+      return raw.whereType<String>().where((t) => t.isNotEmpty).toList();
+    }
+    final legacy = d['fcmToken'] as String?;
+    return (legacy != null && legacy.isNotEmpty) ? [legacy] : const [];
   }
 
   Map<String, dynamic> toFirestore() {
@@ -90,7 +101,7 @@ class UserModel {
       if (quarter != null) 'quarter': quarter,
       if (avatarUrl != null) 'avatarUrl': avatarUrl,
       if (focalZone != null) 'focalZone': focalZone,
-      if (fcmToken != null) 'fcmToken': fcmToken,
+      'fcmTokens': fcmTokens,
       'preferredPayment': preferredPayment,
       'preferredFrequency': preferredFrequency,
       'language': language,
@@ -114,7 +125,7 @@ class UserModel {
     String? quarter,
     String? avatarUrl,
     String? focalZone,
-    String? fcmToken,
+    List<String>? fcmTokens,
     String? preferredPayment,
     String? preferredFrequency,
     String? language,
@@ -136,7 +147,7 @@ class UserModel {
       quarter: quarter ?? this.quarter,
       avatarUrl: avatarUrl ?? this.avatarUrl,
       focalZone: focalZone ?? this.focalZone,
-      fcmToken: fcmToken ?? this.fcmToken,
+      fcmTokens: fcmTokens ?? this.fcmTokens,
       preferredPayment: preferredPayment ?? this.preferredPayment,
       preferredFrequency: preferredFrequency ?? this.preferredFrequency,
       language: language ?? this.language,

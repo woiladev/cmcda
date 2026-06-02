@@ -13,11 +13,15 @@ import '../../data/repositories/auth_repository.dart';
 import '../../presentation/screens/auth/splash_screen.dart';
 import '../../presentation/screens/auth/onboarding_screen.dart';
 import '../../presentation/screens/auth/login_screen.dart';
+import '../../presentation/screens/auth/complete_profile_screen.dart';
 import '../../presentation/screens/member/member_dashboard_screen.dart';
 import '../../presentation/screens/member/member_shell.dart';
 import '../../presentation/screens/member/payment_screen.dart';
 import '../../presentation/screens/member/profile_screen.dart';
 import '../../presentation/screens/member/notifications_screen.dart';
+import '../../presentation/screens/member/reminder_settings_screen.dart';
+import '../../presentation/screens/member/events_screen.dart';
+import '../../presentation/screens/member/event_detail_screen.dart';
 import '../../presentation/screens/admin/admin_dashboard_screen.dart';
 import '../../presentation/screens/admin/admin_members_screen.dart';
 import '../../presentation/screens/admin/admin_payments_screen.dart';
@@ -25,6 +29,7 @@ import '../../presentation/screens/admin/admin_shell.dart';
 import '../../presentation/screens/admin/admin_settings_screen.dart';
 import '../../presentation/screens/focal/focal_dashboard_screen.dart';
 import '../../presentation/screens/focal/focal_members_screen.dart';
+import '../../presentation/screens/focal/focal_payments_screen.dart';
 import '../../presentation/screens/focal/focal_profile_screen.dart';
 import '../../presentation/screens/focal/focal_reports_screen.dart';
 import '../../presentation/screens/focal/focal_session_screen.dart';
@@ -35,7 +40,17 @@ import '../../presentation/screens/admin/admin_wallet_screen.dart';
 import '../../presentation/screens/admin/admin_wallet_account_screen.dart';
 import '../../presentation/screens/admin/admin_manual_payment_screen.dart';
 import '../../presentation/screens/admin/admin_focal_reports_screen.dart';
+import '../../presentation/screens/admin/admin_audit_screen.dart';
+import '../../presentation/screens/admin/admin_team_screen.dart';
+import '../../presentation/screens/admin/admin_bank_details_screen.dart';
+import '../../presentation/screens/admin/admin_analytics_screen.dart';
 import '../../presentation/screens/focal/focal_report_detail_screen.dart';
+import '../../presentation/screens/admin/admin_events_screen.dart';
+import '../../presentation/screens/admin/admin_event_form_screen.dart';
+import '../../presentation/screens/common/privacy_policy_screen.dart';
+import '../../presentation/screens/common/help_screen.dart';
+import '../../presentation/screens/common/about_screen.dart';
+import '../../data/models/event_model.dart';
 
 // ── Auth State Providers ──────────────────────────────────────
 
@@ -48,7 +63,8 @@ final authStateProvider = StreamProvider<User?>((ref) {
 final currentUserProfileProvider = StreamProvider<UserModel?>((ref) {
   final authState = ref.watch(authStateProvider);
   return authState.when(
-    data: (user) => user != null ? _authRepo.userStream(user.uid) : Stream.value(null),
+    data: (user) =>
+        user != null ? _authRepo.userStream(user.uid) : Stream.value(null),
     loading: () => Stream.value(null),
     error: (_, __) => Stream.value(null),
   );
@@ -113,11 +129,21 @@ final routerProvider = Provider<GoRouter>((ref) {
         return publicRoutes.contains(location) ? null : AppRoutes.login;
       }
 
-      // User is authenticated — redirect away from public routes
-      if (publicRoutes.contains(location)) {
-        final profile = profileAsync.valueOrNull;
-        if (profile == null) return null; // wait for profile to load
+      // User is authenticated — wait for Firestore profile stream
+      if (profileAsync.isLoading || profileAsync.hasError) return null;
 
+      final profile = profileAsync.valueOrNull;
+
+      // No Firestore doc yet — new social/phone user needs to complete profile
+      if (profile == null) {
+        return location == AppRoutes.completeProfile
+            ? null
+            : AppRoutes.completeProfile;
+      }
+
+      // Profile exists — redirect away from complete-profile or public routes
+      if (location == AppRoutes.completeProfile ||
+          publicRoutes.contains(location)) {
         final role = profile.role;
         if (role == AppConstants.roleAdmin ||
             role == AppConstants.roleSuperAdmin) {
@@ -125,6 +151,14 @@ final routerProvider = Provider<GoRouter>((ref) {
         }
         if (role == AppConstants.roleFocal) return AppRoutes.focal;
         return AppRoutes.dashboard;
+      }
+
+      // Super-admin-only routes
+      if ((location == AppRoutes.adminAudit ||
+              location == AppRoutes.adminTeam ||
+              location == AppRoutes.adminBankDetails) &&
+          profile.role != AppConstants.roleSuperAdmin) {
+        return AppRoutes.admin;
       }
 
       return null;
@@ -148,6 +182,10 @@ final routerProvider = Provider<GoRouter>((ref) {
         path: AppRoutes.signup,
         builder: (_, __) => const LoginScreen(startOnSignup: true),
       ),
+      GoRoute(
+        path: AppRoutes.completeProfile,
+        builder: (_, __) => const CompleteProfileScreen(),
+      ),
 
       // ── Member shell (persistent nav bar across 4 tabs) ─────
       StatefulShellRoute.indexedStack(
@@ -168,6 +206,12 @@ final routerProvider = Provider<GoRouter>((ref) {
           ]),
           StatefulShellBranch(routes: [
             GoRoute(
+              path: AppRoutes.events,
+              builder: (_, __) => const EventsScreen(),
+            ),
+          ]),
+          StatefulShellBranch(routes: [
+            GoRoute(
               path: AppRoutes.notifications,
               builder: (_, __) => const NotificationsScreen(),
             ),
@@ -184,6 +228,17 @@ final routerProvider = Provider<GoRouter>((ref) {
         path: AppRoutes.receipts,
         parentNavigatorKey: _rootNavigatorKey,
         builder: (_, __) => const ReceiptsScreen(),
+      ),
+      GoRoute(
+        path: AppRoutes.reminders,
+        parentNavigatorKey: _rootNavigatorKey,
+        builder: (_, __) => const ReminderSettingsScreen(),
+      ),
+      GoRoute(
+        path: AppRoutes.eventDetail,
+        parentNavigatorKey: _rootNavigatorKey,
+        builder: (_, state) =>
+            EventDetailScreen(eventId: state.extra as String),
       ),
 
       // ── Admin shell (persistent nav bar across 4 tabs) ──────
@@ -211,6 +266,12 @@ final routerProvider = Provider<GoRouter>((ref) {
           ]),
           StatefulShellBranch(routes: [
             GoRoute(
+              path: AppRoutes.adminWallet,
+              builder: (_, __) => const AdminWalletScreen(),
+            ),
+          ]),
+          StatefulShellBranch(routes: [
+            GoRoute(
               path: AppRoutes.adminSettings,
               builder: (_, __) => const AdminSettingsScreen(),
             ),
@@ -228,8 +289,39 @@ final routerProvider = Provider<GoRouter>((ref) {
         parentNavigatorKey: _rootNavigatorKey,
         builder: (_, __) => const AdminFocalReportsScreen(),
       ),
+      GoRoute(
+        path: AppRoutes.adminTeam,
+        parentNavigatorKey: _rootNavigatorKey,
+        builder: (_, __) => const AdminTeamScreen(),
+      ),
+      GoRoute(
+        path: AppRoutes.adminAudit,
+        parentNavigatorKey: _rootNavigatorKey,
+        builder: (_, __) => const AdminAuditScreen(),
+      ),
+      GoRoute(
+        path: AppRoutes.adminBankDetails,
+        parentNavigatorKey: _rootNavigatorKey,
+        builder: (_, __) => const AdminBankDetailsScreen(),
+      ),
+      GoRoute(
+        path: AppRoutes.adminAnalytics,
+        parentNavigatorKey: _rootNavigatorKey,
+        builder: (_, __) => const AdminAnalyticsScreen(),
+      ),
+      GoRoute(
+        path: AppRoutes.adminEvents,
+        parentNavigatorKey: _rootNavigatorKey,
+        builder: (_, __) => const AdminEventsScreen(),
+      ),
+      GoRoute(
+        path: AppRoutes.adminEventForm,
+        parentNavigatorKey: _rootNavigatorKey,
+        builder: (_, state) =>
+            AdminEventFormScreen(event: state.extra as EventModel?),
+      ),
 
-      // ── Focal shell (persistent nav bar across 4 tabs) ──────
+      // ── Focal shell (persistent nav bar across 5 tabs) ──────
       StatefulShellRoute.indexedStack(
         builder: (context, state, navigationShell) =>
             FocalShell(navigationShell: navigationShell),
@@ -244,6 +336,12 @@ final routerProvider = Provider<GoRouter>((ref) {
             GoRoute(
               path: AppRoutes.focalMembers,
               builder: (_, __) => const FocalMembersScreen(),
+            ),
+          ]),
+          StatefulShellBranch(routes: [
+            GoRoute(
+              path: AppRoutes.focalPayments,
+              builder: (_, __) => const FocalPaymentsScreen(),
             ),
           ]),
           StatefulShellBranch(routes: [
@@ -289,11 +387,8 @@ final routerProvider = Provider<GoRouter>((ref) {
       ),
 
       // ── Treasury (admin) ─────────────────────────────────────
-      GoRoute(
-        path: AppRoutes.adminWallet,
-        parentNavigatorKey: _rootNavigatorKey,
-        builder: (_, __) => const AdminWalletScreen(),
-      ),
+      // adminWallet is a shell branch (Wallet tab); only the account detail
+      // is a root push route here.
       GoRoute(
         path: AppRoutes.adminWalletAccount,
         parentNavigatorKey: _rootNavigatorKey,
@@ -304,36 +399,20 @@ final routerProvider = Provider<GoRouter>((ref) {
 
       // ── Common ───────────────────────────────────────────────
       GoRoute(
-        path: AppRoutes.settings,
-        builder: (_, __) => const _PlaceholderScreen(title: 'Paramètres'),
-      ),
-      GoRoute(
         path: AppRoutes.help,
-        builder: (_, __) => const _PlaceholderScreen(title: 'Aide'),
+        builder: (_, __) => const HelpScreen(),
       ),
       GoRoute(
         path: AppRoutes.about,
-        builder: (_, __) =>
-            const _PlaceholderScreen(title: 'À propos — CMCDA Platform'),
+        builder: (_, __) => const AboutScreen(),
+      ),
+      GoRoute(
+        path: AppRoutes.privacyPolicy,
+        builder: (_, __) => const PrivacyPolicyScreen(),
       ),
     ],
   );
 });
-
-// ── Internal Placeholder ──────────────────────────────────────
-
-class _PlaceholderScreen extends StatelessWidget {
-  final String title;
-  const _PlaceholderScreen({required this.title});
-
-  @override
-  Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(title: Text(title)),
-      body: const Center(child: CircularProgressIndicator()),
-    );
-  }
-}
 
 // ── Error Page ────────────────────────────────────────────────
 

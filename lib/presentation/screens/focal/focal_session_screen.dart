@@ -10,7 +10,9 @@ import '../../../core/l10n/app_localizations.dart';
 import '../../../core/services/router_service.dart';
 import '../../../core/theme/app_theme.dart';
 import '../../../core/utils/app_utils.dart';
+import '../../../data/models/focal_report_model.dart';
 import '../../../data/models/user_model.dart';
+import '../../../data/repositories/auth_repository.dart';
 import '../../../data/repositories/contribution_repository.dart';
 import '../../../data/repositories/focal_report_repository.dart';
 import '../../widgets/common/payment_method_icon.dart';
@@ -44,6 +46,31 @@ class _Entry {
     required this.paymentMethod,
     this.isNewMember = false,
   });
+
+  Map<String, dynamic> toMap() => {
+        'uid': uid,
+        'memberId': memberId,
+        'memberName': memberName,
+        'memberNumber': memberNumber,
+        'amount': amount,
+        'periodType': periodType,
+        'period': period,
+        'paymentMethod': paymentMethod,
+        'isNewMember': isNewMember,
+      };
+
+  factory _Entry.fromMap(Map<String, dynamic> m) => _Entry(
+        uid: (m['uid'] as num).toInt(),
+        memberId: m['memberId'] as String?,
+        memberName: (m['memberName'] as String?) ?? '',
+        memberNumber: (m['memberNumber'] as String?) ?? '',
+        amount: ((m['amount'] as num?) ?? 0).toInt(),
+        periodType: (m['periodType'] as String?) ?? AppConstants.periodMonthly,
+        period: (m['period'] as String?) ?? '',
+        paymentMethod:
+            (m['paymentMethod'] as String?) ?? AppConstants.paymentCash,
+        isNewMember: (m['isNewMember'] as bool?) ?? false,
+      );
 }
 
 // ── Screen ────────────────────────────────────────────────────
@@ -69,6 +96,7 @@ class _State extends ConsumerState<FocalSessionScreen> {
   bool _finalizing = false;
   bool _locationSet = false;
   int _uidCounter = 0;
+  UserModel? _focalUser;
 
   // Always below the Scaffold — safe for showModalBottomSheet / showDialog.
   BuildContext get _ctx => _scaffoldKey.currentContext ?? context;
@@ -84,6 +112,7 @@ class _State extends ConsumerState<FocalSessionScreen> {
 
   // Pre-fill location from focal officer's zone (only on first build).
   void _initLocation(UserModel user) {
+    _focalUser = user;
     if (_locationSet) return;
     _locationSet = true;
     final zone = (user.focalZone?.isNotEmpty == true)
@@ -94,23 +123,97 @@ class _State extends ConsumerState<FocalSessionScreen> {
         if (mounted) _locationCtrl.text = zone;
       });
     }
+    // Restore in-progress draft for this focal/date if present.
+    _loadDraft();
+  }
+
+  // ── Draft auto-save ───────────────────────────────────────
+  // Persists in-memory entries to Firestore so a crash mid-session
+  // doesn't lose collected payments. Cleared on successful finalize.
+
+  String get _draftDocId =>
+      '${_focalUser?.id ?? 'anon'}_${DateFormat('yyyy-MM-dd').format(_date)}';
+
+  DocumentReference<Map<String, dynamic>> get _draftRef =>
+      FirebaseFirestore.instance
+          .collection(AppConstants.focalSessionDraftsCollection)
+          .doc(_draftDocId);
+
+  Future<void> _loadDraft() async {
+    final user = _focalUser;
+    if (user == null) return;
+    try {
+      final snap = await _draftRef.get();
+      if (!snap.exists || !mounted) return;
+      final data = snap.data();
+      final entries = (data?['entries'] as List?)
+              ?.map((e) => _Entry.fromMap(Map<String, dynamic>.from(e as Map)))
+              .toList() ??
+          const <_Entry>[];
+      if (entries.isEmpty) return;
+      final maxUid = entries
+          .map((e) => e.uid)
+          .fold<int>(0, (a, b) => a > b ? a : b);
+      setState(() {
+        _entries
+          ..clear()
+          ..addAll(entries);
+        _uidCounter = maxUid + 1;
+      });
+    } catch (_) {
+      // Drafts are best-effort; a load failure must not block the session.
+    }
+  }
+
+  Future<void> _saveDraft() async {
+    final user = _focalUser;
+    if (user == null) return;
+    try {
+      if (_entries.isEmpty) {
+        await _draftRef.delete();
+        return;
+      }
+      await _draftRef.set({
+        'focalId': user.id,
+        'date': DateFormat('yyyy-MM-dd').format(_date),
+        'entries': _entries.map((e) => e.toMap()).toList(),
+        'updatedAt': Timestamp.now(),
+      });
+    } catch (_) {
+      // Best-effort; offline writes will queue and replay.
+    }
+  }
+
+  Future<void> _clearDraft() async {
+    try {
+      await _draftRef.delete();
+    } catch (_) {/* ignore */}
   }
 
   // ── Actions ────────────────────────────────────────────────
 
   Future<void> _addPayment() async {
     if (!mounted) return;
+    final user = _focalUser;
+    if (user == null) return;
     final entry = await showModalBottomSheet<_Entry>(
       context: _ctx,
       isScrollControlled: true,
       backgroundColor: Colors.transparent,
-      builder: (_) => _AddSheet(uid: _uidCounter, date: _date),
+      builder: (_) => _AddSheet(
+        uid: _uidCounter,
+        date: _date,
+        focalId: user.id,
+        focalRegion: user.region,
+        focalDepartment: user.department,
+      ),
     );
     if (entry != null && mounted) {
       setState(() {
         _uidCounter++;
         _entries.insert(0, entry);
       });
+      _saveDraft();
     }
   }
 
@@ -127,7 +230,11 @@ class _State extends ConsumerState<FocalSessionScreen> {
         child: child!,
       ),
     );
-    if (picked != null && mounted) setState(() => _date = picked);
+    if (picked != null && mounted) {
+      setState(() => _date = picked);
+      // Date change → new draft scope. Try restoring its draft (if any).
+      _loadDraft();
+    }
   }
 
   Future<void> _finalize(AppLocalizations l, UserModel user) async {
@@ -171,7 +278,7 @@ class _State extends ConsumerState<FocalSessionScreen> {
 
       final contributions = await Future.wait(
         _entries.map((e) => _contribRepo.createContribution(
-          memberId: e.memberId ?? '',
+          memberId: e.memberId!,
           memberName: e.memberName,
           memberNumber: e.memberNumber,
           amount: e.amount,
@@ -183,9 +290,16 @@ class _State extends ConsumerState<FocalSessionScreen> {
         )),
       );
 
+      // Auto-submit on finalize so the report reaches admins in one step
+      // (status draft → submitted) and triggers the admin notification.
       await _focalRepo.updateReport(reportId, {
         'contributionIds': contributions.map((c) => c.id).toList(),
+        'status': FocalReportModel.statusSubmitted,
       });
+
+      // Draft is no longer needed — entries are now persisted as
+      // a real focal report + contribution docs.
+      await _clearDraft();
 
       messenger.showSnackBar(SnackBar(
         content: Text(successMsg),
@@ -225,6 +339,7 @@ class _State extends ConsumerState<FocalSessionScreen> {
           ElevatedButton(
             onPressed: () {
               Navigator.pop(ctx);
+              _clearDraft();
               Navigator.of(_ctx).pop();
             },
             style: ElevatedButton.styleFrom(backgroundColor: AppColors.error),
@@ -236,7 +351,10 @@ class _State extends ConsumerState<FocalSessionScreen> {
     );
   }
 
-  void _delete(int index) => setState(() => _entries.removeAt(index));
+  void _delete(int index) {
+    setState(() => _entries.removeAt(index));
+    _saveDraft();
+  }
 
   // ── Build ──────────────────────────────────────────────────
 
@@ -542,7 +660,7 @@ class _EmptyState extends StatelessWidget {
             ),
             const SizedBox(height: AppConstants.spaceSM),
             Text(
-              'Ajoutez les paiements collectés lors de cette session.',
+              l.sessionAddPaymentsHint,
               style: GoogleFonts.plusJakartaSans(
                   fontSize: 13, color: AppColors.textGray),
               textAlign: TextAlign.center,
@@ -624,6 +742,7 @@ class _EntryCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final l = AppLocalizations.of(context);
     return Dismissible(
       key: Key('entry_${entry.uid}'),
       direction: DismissDirection.endToStart,
@@ -722,7 +841,7 @@ class _EntryCard extends StatelessWidget {
                                           AppConstants.radiusFull),
                                     ),
                                     child: Text(
-                                      'Nouveau',
+                                      l.newBadge,
                                       style: GoogleFonts.plusJakartaSans(
                                         fontSize: 9,
                                         fontWeight: FontWeight.w700,
@@ -793,7 +912,17 @@ class _EntryCard extends StatelessWidget {
 class _AddSheet extends StatefulWidget {
   final int uid;
   final DateTime date;
-  const _AddSheet({required this.uid, required this.date});
+  final String focalId;
+  final String focalRegion;
+  final String focalDepartment;
+
+  const _AddSheet({
+    required this.uid,
+    required this.date,
+    required this.focalId,
+    required this.focalRegion,
+    required this.focalDepartment,
+  });
 
   @override
   State<_AddSheet> createState() => _AddSheetState();
@@ -803,9 +932,13 @@ class _AddSheetState extends State<_AddSheet> {
   final _numCtrl = TextEditingController();
   final _nameCtrl = TextEditingController();
   final _customCtrl = TextEditingController();
+  final _phoneCtrl = TextEditingController();
+  final _authRepo = AuthRepository();
 
   String? _memberId;
+  String? _resolvedMemberNumber;
   bool _searching = false;
+  bool _registering = false;
   String? _searchStatus; // 'found' | 'not_found'
   bool _nameReadOnly = false;
   bool _isNewMember = false;
@@ -834,12 +967,28 @@ class _AddSheetState extends State<_AddSheet> {
     _numCtrl.dispose();
     _nameCtrl.dispose();
     _customCtrl.dispose();
+    _phoneCtrl.dispose();
     super.dispose();
   }
 
+  /// Normalises a typed matricule into the canonical `Prefix-000123` form.
+  /// If the user types a full code with a `-`, their prefix is preserved
+  /// (lets a focal in Adamaoua search for a member registered in Centre).
+  /// If only digits are typed, the focal officer's own region prefix is used.
   String _fmt(String raw) {
-    final d = raw.replaceAll(RegExp(r'[^0-9]'), '');
-    return d.isEmpty ? '' : 'CM-${d.padLeft(6, '0')}';
+    final t = raw.trim();
+    if (t.contains('-')) {
+      final parts = t.split('-');
+      final prefix = parts.first.trim();
+      final digits = parts.skip(1).join('').replaceAll(RegExp(r'[^0-9]'), '');
+      if (digits.isEmpty) return '';
+      return '$prefix-${digits.padLeft(6, '0')}';
+    }
+    final d = t.replaceAll(RegExp(r'[^0-9]'), '');
+    if (d.isEmpty) return '';
+    final prefix = AppConstants.regionMemberPrefixes[widget.focalRegion]
+        ?? AppConstants.memberPrefixFallback;
+    return '$prefix-${d.padLeft(6, '0')}';
   }
 
   Future<void> _search(AppLocalizations l) async {
@@ -849,6 +998,7 @@ class _AddSheetState extends State<_AddSheet> {
       _searching = true;
       _searchStatus = null;
       _memberId = null;
+      _resolvedMemberNumber = null;
       _nameReadOnly = false;
     });
     try {
@@ -861,6 +1011,7 @@ class _AddSheetState extends State<_AddSheet> {
       if (snap.docs.isNotEmpty) {
         final d = snap.docs.first.data();
         _memberId = snap.docs.first.id;
+        _resolvedMemberNumber = num;
         _numCtrl.text = num;
         _nameCtrl.text =
             '${d['firstName'] ?? ''} ${d['lastName'] ?? ''}'.trim();
@@ -880,8 +1031,15 @@ class _AddSheetState extends State<_AddSheet> {
   }
 
   bool get _canSubmit {
+    if (_registering) return false;
     if (_nameCtrl.text.trim().isEmpty) return false;
-    if (_numCtrl.text.trim().isEmpty) return false;
+    if (_isNewMember) {
+      // New member: phone is required; matricule is auto-generated.
+      if (_phoneCtrl.text.trim().isEmpty) return false;
+    } else {
+      // Existing member: the lookup must have resolved a real Firestore doc.
+      if (_memberId == null) return false;
+    }
     if (_isCustom) {
       final v = int.tryParse(_customCtrl.text.trim());
       return v != null && v > 0;
@@ -889,15 +1047,59 @@ class _AddSheetState extends State<_AddSheet> {
     return true;
   }
 
-  void _submit() {
+  Future<void> _submit() async {
     if (!_canSubmit) return;
     final amount =
         _isCustom ? int.parse(_customCtrl.text.trim()) : _presetAmount!;
+
+    String memberId;
+    String memberNumber;
+    String memberName;
+
+    if (_isNewMember) {
+      // Atomically register the new member so the contribution has a real
+      // memberId and a region-prefixed matricule from counters/members.
+      setState(() => _registering = true);
+      try {
+        final fullName = _nameCtrl.text.trim();
+        final spaceIdx = fullName.indexOf(' ');
+        final firstName = spaceIdx == -1
+            ? fullName
+            : fullName.substring(0, spaceIdx).trim();
+        final lastName = spaceIdx == -1
+            ? ''
+            : fullName.substring(spaceIdx + 1).trim();
+
+        final rawPhone = _phoneCtrl.text.trim().replaceAll(' ', '');
+        final phone = rawPhone.startsWith('+') ? rawPhone : '+237$rawPhone';
+
+        final user = await _authRepo.registerMemberByFocal(
+          firstName: firstName,
+          lastName: lastName,
+          phone: phone,
+          region: widget.focalRegion,
+          department: widget.focalDepartment,
+          focalId: widget.focalId,
+        );
+        memberId = user.id;
+        memberNumber = user.memberNumber;
+        memberName = user.fullName;
+      } catch (_) {
+        if (mounted) setState(() => _registering = false);
+        return;
+      }
+    } else {
+      memberId = _memberId!;
+      memberNumber = _resolvedMemberNumber ?? _fmt(_numCtrl.text.trim());
+      memberName = _nameCtrl.text.trim();
+    }
+
+    if (!mounted) return;
     Navigator.of(context).pop(_Entry(
       uid: widget.uid,
-      memberId: _memberId,
-      memberName: _nameCtrl.text.trim(),
-      memberNumber: _fmt(_numCtrl.text.trim()),
+      memberId: memberId,
+      memberName: memberName,
+      memberNumber: memberNumber,
       amount: amount,
       periodType: _periodType,
       period: AppUtils.getPeriodForDate(_coverMonth),
@@ -1066,7 +1268,7 @@ class _AddSheetState extends State<_AddSheet> {
                   const SizedBox(height: AppConstants.spaceLG),
 
                   // Month picker
-                  const _Label('Mois concerné'),
+                  _Label(l.targetMonth),
                   const SizedBox(height: AppConstants.spaceSM),
                   _MonthRow(
                     selected: _coverMonth,
@@ -1203,6 +1405,27 @@ class _AddSheetState extends State<_AddSheet> {
                       ),
                     ),
                   ),
+
+                  // Phone — only required when registering a new member.
+                  // Matricule is auto-generated server-side from the focal
+                  // officer's region prefix, so no number input is needed.
+                  if (_isNewMember) ...[
+                    const SizedBox(height: AppConstants.spaceMD),
+                    TextField(
+                      controller: _phoneCtrl,
+                      keyboardType: TextInputType.phone,
+                      onChanged: (_) => setState(() {}),
+                      inputFormatters: [
+                        FilteringTextInputFormatter.allow(
+                            RegExp(r'[0-9+ ]')),
+                      ],
+                      decoration: _inputDeco(
+                        hint: '${l.phone} (+237…)',
+                        icon: Icons.phone_android_rounded,
+                      ),
+                    ),
+                  ],
+
                   const SizedBox(height: AppConstants.spaceLG),
 
                   // Submit
@@ -1218,14 +1441,21 @@ class _AddSheetState extends State<_AddSheet> {
                               AppConstants.radiusMD),
                         ),
                       ),
-                      child: Text(
-                        l.recordPayment,
-                        style: GoogleFonts.plusJakartaSans(
-                          fontSize: 15,
-                          fontWeight: FontWeight.w700,
-                          color: Colors.white,
-                        ),
-                      ),
+                      child: _registering
+                          ? const SizedBox(
+                              width: 20,
+                              height: 20,
+                              child: CircularProgressIndicator(
+                                  color: Colors.white, strokeWidth: 2),
+                            )
+                          : Text(
+                              l.recordPayment,
+                              style: GoogleFonts.plusJakartaSans(
+                                fontSize: 15,
+                                fontWeight: FontWeight.w700,
+                                color: Colors.white,
+                              ),
+                            ),
                     ),
                   ),
                   const SizedBox(height: AppConstants.spaceLG),

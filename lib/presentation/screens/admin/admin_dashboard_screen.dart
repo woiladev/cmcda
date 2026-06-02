@@ -11,12 +11,13 @@ import 'package:intl/intl.dart';
 import '../../../core/constants/app_constants.dart';
 import '../../../core/constants/app_routes.dart';
 import '../../../core/l10n/app_localizations.dart';
-import '../../../core/services/notification_service.dart';
 import '../../../core/services/router_service.dart';
 import '../../../core/theme/app_theme.dart';
 import '../../../core/utils/app_utils.dart';
 import '../../../data/models/contribution_model.dart';
 import '../../../data/repositories/contribution_repository.dart';
+import '../../widgets/common/app_animations.dart';
+import '../../widgets/common/app_shimmer.dart';
 import 'send_notification_sheet.dart';
 
 // ── Data classes ──────────────────────────────────────────────
@@ -45,13 +46,17 @@ class _DayStat {
   const _DayStat(this.date, this.total);
 }
 
-class _PlatformVisionStats {
-  final int totalMembers;
-  final int yearRevenue;
+class _FocalRanking {
+  final String focalId;
+  final String name;
+  final int amount;
+  final int count;
 
-  const _PlatformVisionStats({
-    required this.totalMembers,
-    required this.yearRevenue,
+  const _FocalRanking({
+    required this.focalId,
+    required this.name,
+    required this.amount,
+    required this.count,
   });
 }
 
@@ -152,36 +157,103 @@ final _adminStatsProvider =
   );
 });
 
-final _platformVisionProvider =
-    FutureProvider.autoDispose<_PlatformVisionStats>((ref) async {
+// Total members = live count of every user document, mirroring the members
+// page (_allUsersProvider) exactly so the two screens always agree. Uses a
+// document snapshot stream (not an aggregate count()), which the Firestore
+// role-check rules don't block — see backfillPlatformCounters() for why
+// aggregate queries are avoided. The platform total still reads its counter.
+final _memberCountProvider = StreamProvider.autoDispose<int>((ref) {
+  return FirebaseFirestore.instance
+      .collection(AppConstants.usersCollection)
+      .orderBy('createdAt', descending: true)
+      .limit(500)
+      .snapshots()
+      .map((s) => s.docs.length);
+});
+
+final _platformTotalProvider = StreamProvider.autoDispose<double>((ref) {
+  return ContributionRepository().streamPlatformTotal();
+});
+
+final _focalLeaderboardProvider =
+    FutureProvider.autoDispose<List<_FocalRanking>>((ref) async {
   final db = FirebaseFirestore.instance;
   final now = DateTime.now();
-  final startOfYear = DateTime(now.year, 1, 1);
+  final startOfMonth = DateTime(now.year, now.month, 1);
 
-  // Use aggregate sum for year revenue — avoids downloading all contribution docs.
-  final results = await Future.wait<dynamic>([
-    db
-        .collection(AppConstants.usersCollection)
-        .count()
-        .get(),
-    db
-        .collection(AppConstants.contributionsCollection)
+  // Pull this month's confirmed contributions and group client-side.
+  // We need per-focal totals, which Firestore can't aggregate directly.
+  final snap = await db
+      .collection(AppConstants.contributionsCollection)
+      .where('status', isEqualTo: AppConstants.statusConfirmed)
+      .where('createdAt',
+          isGreaterThanOrEqualTo: Timestamp.fromDate(startOfMonth))
+      .get();
+
+  final totals = <String, int>{};
+  final counts = <String, int>{};
+  for (final doc in snap.docs) {
+    final data = doc.data();
+    final focalId = (data['recordedBy'] as String?)?.trim() ?? '';
+    if (focalId.isEmpty) continue;
+    totals[focalId] =
+        (totals[focalId] ?? 0) + ((data['amount'] as num?)?.toInt() ?? 0);
+    counts[focalId] = (counts[focalId] ?? 0) + 1;
+  }
+
+  final topIds = totals.entries.toList()
+    ..sort((a, b) => b.value.compareTo(a.value));
+  final top = topIds.take(3).toList();
+  if (top.isEmpty) return [];
+
+  // Resolve focal names — but only the ones we actually need.
+  final userDocs = await Future.wait(top.map((e) =>
+      db.collection(AppConstants.usersCollection).doc(e.key).get()));
+
+  return [
+    for (var i = 0; i < top.length; i++)
+      _FocalRanking(
+        focalId: top[i].key,
+        name: () {
+          final d = userDocs[i].data();
+          if (d == null) return top[i].key;
+          final first = (d['firstName'] as String?) ?? '';
+          final last = (d['lastName'] as String?) ?? '';
+          final full = '$first $last'.trim();
+          return full.isEmpty ? top[i].key : full;
+        }(),
+        amount: top[i].value,
+        count: counts[top[i].key] ?? 0,
+      ),
+  ];
+});
+
+final _methodDistributionProvider =
+    FutureProvider.autoDispose<Map<String, int>>((ref) async {
+  final db = FirebaseFirestore.instance;
+  final now = DateTime.now();
+  final startOfMonth = DateTime(now.year, now.month, 1);
+  final col = db.collection(AppConstants.contributionsCollection);
+
+  Future<int> sumFor(String method) async {
+    final agg = await col
         .where('status', isEqualTo: AppConstants.statusConfirmed)
+        .where('paymentMethod', isEqualTo: method)
         .where('createdAt',
-            isGreaterThanOrEqualTo: Timestamp.fromDate(startOfYear))
+            isGreaterThanOrEqualTo: Timestamp.fromDate(startOfMonth))
         .aggregate(sum('amount'))
-        .get(),
-  ]);
+        .get();
+    return (agg.getSum('amount') ?? 0).toInt();
+  }
 
-  final totalMembers =
-      (results[0] as AggregateQuerySnapshot).count ?? 0;
-  final yearRevenue =
-      ((results[1] as AggregateQuerySnapshot).getSum('amount') ?? 0).toInt();
-
-  return _PlatformVisionStats(
-    totalMembers: totalMembers,
-    yearRevenue: yearRevenue,
-  );
+  final methods = [
+    AppConstants.paymentMtnMomo,
+    AppConstants.paymentOrangeMoney,
+    AppConstants.paymentCash,
+    AppConstants.paymentBankTransfer,
+  ];
+  final results = await Future.wait(methods.map(sumFor));
+  return {for (var i = 0; i < methods.length; i++) methods[i]: results[i]};
 });
 
 final _chartDataProvider =
@@ -244,16 +316,16 @@ class _AdminDashboardScreenState extends ConsumerState<AdminDashboardScreen> {
     return today >= yesterday ? AppColors.success : AppColors.error;
   }
 
-  String _paymentMethodShort(String method) {
+  String _paymentMethodShort(String method, AppLocalizations l) {
     switch (method) {
       case AppConstants.paymentMtnMomo:
         return 'MTN MoMo';
       case AppConstants.paymentOrangeMoney:
         return 'Orange Money';
       case AppConstants.paymentCash:
-        return 'Espèces';
+        return l.cash;
       default:
-        return 'Virement';
+        return l.bankTransfer;
     }
   }
 
@@ -287,13 +359,8 @@ class _AdminDashboardScreenState extends ConsumerState<AdminDashboardScreen> {
         await _contribRepo.validatePayment(c.id, adminId);
       } else if (c.secondValidatorId == null) {
         await _contribRepo.secondValidatePayment(c.id, adminId);
-        if (c.memberId.isNotEmpty) {
-          NotificationService.instance.notifyPaymentConfirmed(
-            userId: c.memberId,
-            amount: AppUtils.formatAmount(c.amount),
-            receiptNumber: c.receiptNumber,
-          ).ignore();
-        }
+        // The "payment confirmed" push is sent server-side by the
+        // onContributionConfirmed Cloud Function.
       }
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
@@ -341,13 +408,15 @@ class _AdminDashboardScreenState extends ConsumerState<AdminDashboardScreen> {
 
   Widget _buildHeader(BuildContext context) {
     final l10n = AppLocalizations.of(context);
-    final dateStr = DateFormat('EEEE d MMMM yyyy', 'fr_FR')
-        .format(DateTime.now())
-        .replaceFirstMapped(
-            RegExp(r'^.'), (m) => m.group(0)!.toUpperCase());
     final pendingAsync = ref.watch(_pendingPaymentsProvider);
-    final pendingCount =
-        pendingAsync.valueOrNull?.length ?? 0;
+    final pendingList = pendingAsync.valueOrNull ?? const [];
+    final pendingCount = pendingList.length;
+    final awaiting1st = pendingList
+        .where((c) => (c.validatedBy ?? '').isEmpty)
+        .length;
+    final awaiting2nd = pendingCount - awaiting1st;
+    final adminInitials =
+        ref.watch(currentUserProfileProvider).valueOrNull?.initials ?? '?';
 
     return Container(
       clipBehavior: Clip.antiAlias,
@@ -373,29 +442,27 @@ class _AdminDashboardScreenState extends ConsumerState<AdminDashboardScreen> {
         children: [
           Row(
             children: [
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      l10n.adminDashboardTitle,
-                      style: GoogleFonts.playfairDisplay(
-                        color: Colors.white,
-                        fontSize: 22,
-                        fontWeight: FontWeight.w700,
-                      ),
+              GestureDetector(
+                onTap: () => context.go(AppRoutes.adminSettings),
+                child: Container(
+                  width: 44,
+                  height: 44,
+                  decoration: const BoxDecoration(
+                    color: AppColors.gold,
+                    shape: BoxShape.circle,
+                  ),
+                  alignment: Alignment.center,
+                  child: Text(
+                    adminInitials,
+                    style: GoogleFonts.plusJakartaSans(
+                      fontSize: 16,
+                      fontWeight: FontWeight.w800,
+                      color: AppColors.primaryDark,
                     ),
-                    const SizedBox(height: 2),
-                    Text(
-                      dateStr,
-                      style: TextStyle(
-                        color: Colors.white.withValues(alpha: 0.6),
-                        fontSize: 12,
-                      ),
-                    ),
-                  ],
+                  ),
                 ),
               ),
+              const Spacer(),
               Container(
                 padding: const EdgeInsets.symmetric(
                     horizontal: 12, vertical: 5),
@@ -419,7 +486,7 @@ class _AdminDashboardScreenState extends ConsumerState<AdminDashboardScreen> {
                   ref.read(viewingAsMemberProvider.notifier).state = true;
                   context.go(AppRoutes.dashboard);
                 },
-                tooltip: 'Vue Membre',
+                tooltip: l10n.viewAsMember,
                 icon: const Icon(Icons.switch_account_outlined,
                     color: Colors.white, size: 22),
                 padding: EdgeInsets.zero,
@@ -458,7 +525,7 @@ class _AdminDashboardScreenState extends ConsumerState<AdminDashboardScreen> {
             ],
           ),
           const SizedBox(height: AppConstants.spaceLG),
-          _buildPlatformVision(context, pendingCount),
+          _buildPlatformVision(context, pendingCount, awaiting1st, awaiting2nd),
         ],
       ),
     );
@@ -477,17 +544,161 @@ class _AdminDashboardScreenState extends ConsumerState<AdminDashboardScreen> {
         const SizedBox(height: AppConstants.spaceLG),
         _buildChartCard(context),
         const SizedBox(height: AppConstants.spaceLG),
+        _buildMethodDistribution(context),
+        const SizedBox(height: AppConstants.spaceLG),
+        _buildFocalLeaderboard(context),
+        const SizedBox(height: AppConstants.spaceLG),
         _buildRecentPayments(context),
         const SizedBox(height: AppConstants.spaceXL),
       ],
     );
   }
 
+  // ── Focal leaderboard ─────────────────────────────────────
+
+  Widget _buildFocalLeaderboard(BuildContext context) {
+    final l10n = AppLocalizations.of(context);
+    final async = ref.watch(_focalLeaderboardProvider);
+
+    return Container(
+      margin: const EdgeInsets.symmetric(horizontal: AppConstants.spaceMD),
+      padding: const EdgeInsets.all(AppConstants.spaceMD),
+      decoration: BoxDecoration(
+        color: AppColors.surface,
+        borderRadius: BorderRadius.circular(AppConstants.radiusLG),
+        border: Border.all(color: AppColors.border),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Expanded(
+                child: Text(
+                  l10n.topFocalOfficers,
+                  style: GoogleFonts.plusJakartaSans(
+                    fontSize: 14,
+                    fontWeight: FontWeight.w700,
+                    color: AppColors.textDark,
+                  ),
+                ),
+              ),
+              TextButton(
+                onPressed: () =>
+                    context.push(AppRoutes.adminFocalReports),
+                style: TextButton.styleFrom(
+                  padding: EdgeInsets.zero,
+                  minimumSize: Size.zero,
+                  tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                ),
+                child: Text(
+                  l10n.viewAll,
+                  style: const TextStyle(
+                    color: AppColors.primary,
+                    fontSize: 12,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: AppConstants.spaceMD),
+          async.when(
+            loading: () => const SizedBox(
+              height: 60,
+              child: Center(
+                child: CircularProgressIndicator(
+                    color: AppColors.primary, strokeWidth: 2),
+              ),
+            ),
+            error: (_, __) => const SizedBox.shrink(),
+            data: (rankings) {
+              if (rankings.isEmpty) {
+                return Padding(
+                  padding: const EdgeInsets.symmetric(vertical: 12),
+                  child: Text(
+                    l10n.noFocalActivity,
+                    style: const TextStyle(
+                        color: AppColors.textGray, fontSize: 13),
+                  ),
+                );
+              }
+              return Column(
+                children: rankings
+                    .asMap()
+                    .entries
+                    .map((e) => _LeaderboardRow(
+                          rank: e.key + 1,
+                          ranking: e.value,
+                        ))
+                    .toList(),
+              );
+            },
+          ),
+        ],
+      ),
+    );
+  }
+
+  // ── Payment-method distribution ───────────────────────────
+
+  Widget _buildMethodDistribution(BuildContext context) {
+    final l10n = AppLocalizations.of(context);
+    final async = ref.watch(_methodDistributionProvider);
+
+    return Container(
+      margin: const EdgeInsets.symmetric(horizontal: AppConstants.spaceMD),
+      padding: const EdgeInsets.all(AppConstants.spaceMD),
+      decoration: BoxDecoration(
+        color: AppColors.surface,
+        borderRadius: BorderRadius.circular(AppConstants.radiusLG),
+        border: Border.all(color: AppColors.border),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            l10n.paymentMethodDistribution,
+            style: GoogleFonts.plusJakartaSans(
+              fontSize: 14,
+              fontWeight: FontWeight.w700,
+              color: AppColors.textDark,
+            ),
+          ),
+          const SizedBox(height: AppConstants.spaceMD),
+          async.when(
+            loading: () => const SizedBox(
+              height: 40,
+              child: Center(
+                child: CircularProgressIndicator(
+                    color: AppColors.primary, strokeWidth: 2),
+              ),
+            ),
+            error: (_, __) => const SizedBox.shrink(),
+            data: (totals) {
+              final total = totals.values.fold<int>(0, (s, v) => s + v);
+              if (total == 0) {
+                return Text(
+                  l10n.noPaymentsThisMonth,
+                  style: const TextStyle(
+                      color: AppColors.textGray, fontSize: 13),
+                );
+              }
+              return _MethodBar(totals: totals, total: total);
+            },
+          ),
+        ],
+      ),
+    );
+  }
+
   // ── Platform Vision ───────────────────────────────────────
 
-  Widget _buildPlatformVision(BuildContext context, int pendingCount) {
+  Widget _buildPlatformVision(BuildContext context, int pendingCount,
+      int awaiting1st, int awaiting2nd) {
     final l10n = AppLocalizations.of(context);
-    final visionAsync = ref.watch(_platformVisionProvider);
+    final membersAsync = ref.watch(_memberCountProvider);
+    final totalAsync = ref.watch(_platformTotalProvider);
 
     Widget glass({required Widget child}) => Container(
           width: double.infinity,
@@ -527,13 +738,28 @@ class _AdminDashboardScreenState extends ConsumerState<AdminDashboardScreen> {
                 ),
                 const SizedBox(width: AppConstants.spaceMD),
                 Expanded(
-                  child: Text(
-                    '$pendingCount ${l10n.pendingValidation}',
-                    style: const TextStyle(
-                      color: Colors.white,
-                      fontSize: 14,
-                      fontWeight: FontWeight.w600,
-                    ),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        '$pendingCount ${l10n.pendingValidation}',
+                        style: const TextStyle(
+                          color: Colors.white,
+                          fontSize: 14,
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+                      const SizedBox(height: 2),
+                      Text(
+                        '$awaiting1st · ${l10n.awaitingFirstValidator} · '
+                        '$awaiting2nd · ${l10n.awaitingSecondValidator}',
+                        style: TextStyle(
+                          color: Colors.white.withValues(alpha: 0.75),
+                          fontSize: 11,
+                          fontWeight: FontWeight.w500,
+                        ),
+                      ),
+                    ],
                   ),
                 ),
                 Container(
@@ -567,108 +793,127 @@ class _AdminDashboardScreenState extends ConsumerState<AdminDashboardScreen> {
       );
     }
 
-    return visionAsync.when(
-      loading: () => glass(
-        child: const SizedBox(
-          height: 200,
-          child: Center(
-            child: CircularProgressIndicator(
-                color: Colors.white, strokeWidth: 2),
-          ),
-        ),
-      ),
-      error: (_, __) => const SizedBox.shrink(),
-      data: (stats) {
-        final memberProgress =
-            (stats.totalMembers / AppConstants.targetMembers).clamp(0.0, 1.0);
-        final revenueProgress =
-            (stats.yearRevenue / AppConstants.targetAnnualRevenue)
-                .clamp(0.0, 1.0);
-        final memberPct = (memberProgress * 100).toStringAsFixed(1);
-        final revenuePct = (revenueProgress * 100).toStringAsFixed(2);
+    final memberValue = membersAsync.when(
+      loading: () => '…',
+      error: (_, __) => '—',
+      data: (n) => _formatLargeNumber(n),
+    );
+    final totalValue = totalAsync.when(
+      loading: () => '…',
+      error: (_, __) => '—',
+      data: (t) => _formatBigAmount(t.toInt()),
+    );
 
-        return glass(
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
+    Widget statTile({
+      required IconData icon,
+      required String label,
+      required String value,
+      required Color accent,
+    }) {
+      return Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
             children: [
-              // Title row
-              Row(
-                children: [
-                  Container(
-                    padding: const EdgeInsets.all(9),
-                    decoration: BoxDecoration(
-                      color: AppColors.gold.withValues(alpha: 0.18),
-                      borderRadius:
-                          BorderRadius.circular(AppConstants.radiusMD),
-                    ),
-                    child: const Icon(Icons.stars_rounded,
-                        color: AppColors.gold, size: 22),
+              Icon(icon, color: Colors.white.withValues(alpha: 0.7), size: 16),
+              const SizedBox(width: 6),
+              Expanded(
+                child: Text(
+                  label,
+                  style: TextStyle(
+                    color: Colors.white.withValues(alpha: 0.7),
+                    fontSize: 12,
+                    fontWeight: FontWeight.w600,
                   ),
-                  const SizedBox(width: AppConstants.spaceMD),
-                  Expanded(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text(
-                          l10n.platformVision,
-                          style: GoogleFonts.playfairDisplay(
-                            color: Colors.white,
-                            fontSize: 20,
-                            fontWeight: FontWeight.w700,
-                          ),
-                        ),
-                        const SizedBox(height: 3),
-                        Text(
-                          l10n.platformVisionSub,
-                          style: TextStyle(
-                            color: Colors.white.withValues(alpha: 0.6),
-                            fontSize: 13,
-                            height: 1.3,
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-                ],
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                ),
               ),
-              const SizedBox(height: AppConstants.spaceLG),
-
-              // Members bar
-              _VisionProgressBar(
-                label: l10n.membersGoal,
-                icon: Icons.group_outlined,
-                progress: memberProgress,
-                currentLabel: _formatLargeNumber(stats.totalMembers),
-                targetLabel:
-                    '${l10n.targetLabel} ${_formatLargeNumber(AppConstants.targetMembers)}',
-                percentLabel: '$memberPct%',
-                barColor: Colors.white,
-                glowColor: Colors.white,
-              ),
-              const SizedBox(height: AppConstants.spaceLG),
-              Divider(
-                  color: Colors.white.withValues(alpha: 0.12), height: 1),
-              const SizedBox(height: AppConstants.spaceLG),
-
-              // Revenue bar
-              _VisionProgressBar(
-                label: l10n.annualRevenueGoal,
-                icon: Icons.account_balance_wallet_outlined,
-                progress: revenueProgress,
-                currentLabel: _formatBigAmount(stats.yearRevenue),
-                targetLabel:
-                    '${l10n.targetLabel} ${_formatBigAmount(AppConstants.targetAnnualRevenue)}',
-                percentLabel: '$revenuePct%',
-                barColor: AppColors.gold,
-                glowColor: AppColors.gold,
-              ),
-
-              // Pending validation — merged into the same container
-              pendingStrip(),
             ],
           ),
-        );
-      },
+          const SizedBox(height: 8),
+          FittedBox(
+            fit: BoxFit.scaleDown,
+            alignment: Alignment.centerLeft,
+            child: Text(
+              value,
+              style: GoogleFonts.plusJakartaSans(
+                color: accent,
+                fontSize: 24,
+                fontWeight: FontWeight.w800,
+              ),
+            ),
+          ),
+        ],
+      );
+    }
+
+    return glass(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          // Title row
+          Row(
+            children: [
+              Container(
+                padding: const EdgeInsets.all(9),
+                decoration: BoxDecoration(
+                  color: AppColors.gold.withValues(alpha: 0.18),
+                  borderRadius: BorderRadius.circular(AppConstants.radiusMD),
+                ),
+                child: const Icon(Icons.stars_rounded,
+                    color: AppColors.gold, size: 22),
+              ),
+              const SizedBox(width: AppConstants.spaceMD),
+              Expanded(
+                child: Text(
+                  l10n.platformVision,
+                  style: GoogleFonts.playfairDisplay(
+                    color: Colors.white,
+                    fontSize: 20,
+                    fontWeight: FontWeight.w700,
+                  ),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: AppConstants.spaceLG),
+
+          // Real community totals — two tiles fed by the counters/ docs.
+          IntrinsicHeight(
+            child: Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Expanded(
+                  child: statTile(
+                    icon: Icons.group_outlined,
+                    label: l10n.totalMembers,
+                    value: memberValue,
+                    accent: Colors.white,
+                  ),
+                ),
+                const SizedBox(width: AppConstants.spaceMD),
+                Container(
+                  width: 1,
+                  color: Colors.white.withValues(alpha: 0.12),
+                ),
+                const SizedBox(width: AppConstants.spaceMD),
+                Expanded(
+                  child: statTile(
+                    icon: Icons.account_balance_wallet_outlined,
+                    label: l10n.totalContributed,
+                    value: totalValue,
+                    accent: AppColors.gold,
+                  ),
+                ),
+              ],
+            ),
+          ),
+
+          // Pending validation — merged into the same container
+          pendingStrip(),
+        ],
+      ),
     );
   }
 
@@ -719,9 +964,7 @@ class _AdminDashboardScreenState extends ConsumerState<AdminDashboardScreen> {
             children: [
               _KpiCard(
                 emoji: '💰',
-                value: AppUtils.formatAmount(stats.todayTotal)
-                    .replaceAll(' FCFA', ''),
-                suffix: 'FCFA',
+                value: _shortAmount(stats.todayTotal),
                 label: l10n.todayCollection,
                 trend: trendStr,
                 trendColor: trendCol,
@@ -778,19 +1021,22 @@ class _AdminDashboardScreenState extends ConsumerState<AdminDashboardScreen> {
   Widget _buildKpiShimmer() {
     return SizedBox(
       height: 130,
-      child: ListView.separated(
-        padding: const EdgeInsets.symmetric(
-            horizontal: AppConstants.spaceMD),
-        scrollDirection: Axis.horizontal,
-        itemCount: 5,
-        separatorBuilder: (_, __) =>
-            const SizedBox(width: AppConstants.spaceSM),
-        itemBuilder: (_, __) => Container(
-          width: 156,
-          decoration: BoxDecoration(
-            color: AppColors.border.withValues(alpha: 0.4),
-            borderRadius:
-                BorderRadius.circular(AppConstants.radiusLG),
+      child: AppShimmer(
+        child: ListView.separated(
+          padding: const EdgeInsets.symmetric(
+              horizontal: AppConstants.spaceMD),
+          scrollDirection: Axis.horizontal,
+          physics: const NeverScrollableScrollPhysics(),
+          itemCount: 5,
+          separatorBuilder: (_, __) =>
+              const SizedBox(width: AppConstants.spaceSM),
+          itemBuilder: (_, __) => Container(
+            width: 156,
+            decoration: BoxDecoration(
+              color: AppColors.border.withValues(alpha: 0.55),
+              borderRadius:
+                  BorderRadius.circular(AppConstants.radiusLG),
+            ),
           ),
         ),
       ),
@@ -866,14 +1112,14 @@ class _AdminDashboardScreenState extends ConsumerState<AdminDashboardScreen> {
               ),
             ),
             error: (_, __) => const SizedBox(height: 140),
-            data: (days) => _buildBarChart(days),
+            data: (days) => _buildBarChart(days, l10n),
           ),
         ],
       ),
     );
   }
 
-  Widget _buildBarChart(List<_DayStat> days) {
+  Widget _buildBarChart(List<_DayStat> days, AppLocalizations l10n) {
     if (days.isEmpty) return const SizedBox(height: 140);
 
     final maxTotal =
@@ -940,16 +1186,16 @@ class _AdminDashboardScreenState extends ConsumerState<AdminDashboardScreen> {
           ),
         ),
         const SizedBox(height: 8),
-        const Row(
+        Row(
           children: [
-            _ChartLegendDot(color: AppColors.primary,
-                label: 'Jours normaux'),
-            SizedBox(width: 12),
-            _ChartLegendDot(color: AppColors.primaryLight,
-                label: "Aujourd'hui"),
-            SizedBox(width: 12),
             _ChartLegendDot(
-                color: AppColors.gold, label: 'Record'),
+                color: AppColors.primary, label: l10n.chartLegendNormal),
+            const SizedBox(width: 12),
+            _ChartLegendDot(
+                color: AppColors.primaryLight, label: l10n.chartLegendToday),
+            const SizedBox(width: 12),
+            _ChartLegendDot(
+                color: AppColors.gold, label: l10n.chartLegendRecord),
           ],
         ),
       ],
@@ -962,6 +1208,7 @@ class _AdminDashboardScreenState extends ConsumerState<AdminDashboardScreen> {
     final l10n = AppLocalizations.of(context);
     final profileAsync = ref.watch(currentUserProfileProvider);
     final adminId = profileAsync.valueOrNull?.id ?? '';
+    final isSuperAdmin = profileAsync.valueOrNull?.isSuperAdmin ?? false;
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -1017,16 +1264,21 @@ class _AdminDashboardScreenState extends ConsumerState<AdminDashboardScreen> {
               );
             }
             return Column(
-              children: payments
-                  .map((p) => _RecentPaymentItem(
-                        contribution: p,
-                        paymentMethodLabel:
-                            _paymentMethodShort(p.paymentMethod),
-                        onValidate: adminId.isNotEmpty
-                            ? () => _handleValidate(p, adminId)
-                            : null,
-                      ))
-                  .toList(),
+              children: [
+                for (int i = 0; i < payments.length; i++)
+                  FadeSlideIn(
+                    delay: Duration(milliseconds: i * 60),
+                    child: _RecentPaymentItem(
+                      contribution: payments[i],
+                      paymentMethodLabel:
+                          _paymentMethodShort(payments[i].paymentMethod, l10n),
+                      validateLabel: l10n.validate,
+                      onValidate: (isSuperAdmin && adminId.isNotEmpty)
+                          ? () => _handleValidate(payments[i], adminId)
+                          : null,
+                    ),
+                  ),
+              ],
             );
           },
         ),
@@ -1035,18 +1287,20 @@ class _AdminDashboardScreenState extends ConsumerState<AdminDashboardScreen> {
   }
 
   Widget _buildPaymentsShimmer() {
-    return Column(
-      children: List.generate(
-        4,
-        (_) => Container(
-          height: 68,
-          margin: const EdgeInsets.fromLTRB(
-              AppConstants.spaceMD, 0,
-              AppConstants.spaceMD, AppConstants.spaceSM),
-          decoration: BoxDecoration(
-            color: AppColors.border.withValues(alpha: 0.4),
-            borderRadius:
-                BorderRadius.circular(AppConstants.radiusMD),
+    return AppShimmer(
+      child: Column(
+        children: List.generate(
+          4,
+          (_) => Container(
+            height: 68,
+            margin: const EdgeInsets.fromLTRB(
+                AppConstants.spaceMD, 0,
+                AppConstants.spaceMD, AppConstants.spaceSM),
+            decoration: BoxDecoration(
+              color: AppColors.border.withValues(alpha: 0.55),
+              borderRadius:
+                  BorderRadius.circular(AppConstants.radiusMD),
+            ),
           ),
         ),
       ),
@@ -1071,6 +1325,10 @@ class _AdminDashboardScreenState extends ConsumerState<AdminDashboardScreen> {
           const Color(0xFF0f766e), () => context.push(AppRoutes.adminWallet)),
       (Icons.assignment_outlined, l10n.focalReportsTitle,
           const Color(0xFF26A8F3), () => context.push(AppRoutes.adminFocalReports)),
+      (Icons.event_rounded, l10n.manageEvents,
+          AppColors.primaryLight, () => context.push(AppRoutes.adminEvents)),
+      (Icons.settings_outlined, l10n.settings,
+          AppColors.textGray, () => context.push(AppRoutes.adminSettings)),
     ];
 
     return Column(
@@ -1121,7 +1379,6 @@ class _AdminDashboardScreenState extends ConsumerState<AdminDashboardScreen> {
 class _KpiCard extends StatelessWidget {
   final String emoji;
   final String value;
-  final String? suffix;
   final String label;
   final String? trend;
   final Color? trendColor;
@@ -1129,7 +1386,6 @@ class _KpiCard extends StatelessWidget {
   const _KpiCard({
     required this.emoji,
     required this.value,
-    this.suffix,
     required this.label,
     this.trend,
     this.trendColor,
@@ -1165,35 +1421,15 @@ class _KpiCard extends StatelessWidget {
           Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Row(
-                crossAxisAlignment: CrossAxisAlignment.end,
-                children: [
-                  Flexible(
-                    child: Text(
-                      value,
-                      style: GoogleFonts.playfairDisplay(
-                        color: AppColors.textDark,
-                        fontSize: 20,
-                        fontWeight: FontWeight.w700,
-                      ),
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                    ),
-                  ),
-                  if (suffix != null) ...[
-                    const SizedBox(width: 3),
-                    Padding(
-                      padding: const EdgeInsets.only(bottom: 2),
-                      child: Text(
-                        suffix!,
-                        style: const TextStyle(
-                          color: AppColors.textGray,
-                          fontSize: 10,
-                        ),
-                      ),
-                    ),
-                  ],
-                ],
+              Text(
+                value,
+                style: GoogleFonts.playfairDisplay(
+                  color: AppColors.textDark,
+                  fontSize: 20,
+                  fontWeight: FontWeight.w700,
+                ),
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
               ),
               const SizedBox(height: 2),
               Text(
@@ -1229,11 +1465,13 @@ class _KpiCard extends StatelessWidget {
 class _RecentPaymentItem extends StatelessWidget {
   final ContributionModel contribution;
   final String paymentMethodLabel;
+  final String validateLabel;
   final VoidCallback? onValidate;
 
   const _RecentPaymentItem({
     required this.contribution,
     required this.paymentMethodLabel,
+    required this.validateLabel,
     this.onValidate,
   });
 
@@ -1345,9 +1583,9 @@ class _RecentPaymentItem extends StatelessWidget {
                       borderRadius: BorderRadius.circular(
                           AppConstants.radiusFull),
                     ),
-                    child: const Text(
-                      'Valider',
-                      style: TextStyle(
+                    child: Text(
+                      validateLabel,
+                      style: const TextStyle(
                         color: Colors.white,
                         fontSize: 10,
                         fontWeight: FontWeight.w600,
@@ -1383,22 +1621,27 @@ class _QuickActionCard extends StatelessWidget {
       onTap: onTap,
       child: Container(
         decoration: BoxDecoration(
-          color: color.withValues(alpha: 0.07),
-          borderRadius:
-              BorderRadius.circular(AppConstants.radiusMD),
-          border: Border.all(
-              color: color.withValues(alpha: 0.25), width: 1),
+          color: Colors.white,
+          borderRadius: BorderRadius.circular(AppConstants.radiusMD),
+          border: Border.all(color: AppColors.border),
+          boxShadow: [
+            BoxShadow(
+              color: Colors.black.withValues(alpha: 0.04),
+              blurRadius: 4,
+              offset: const Offset(0, 2),
+            ),
+          ],
         ),
         child: Row(
+          crossAxisAlignment: CrossAxisAlignment.center,
           children: [
-            const SizedBox(width: AppConstants.spaceMD),
+            const SizedBox(width: AppConstants.spaceSM),
             Container(
-              width: 34,
-              height: 34,
+              width: 36,
+              height: 36,
               decoration: BoxDecoration(
                 color: color.withValues(alpha: 0.12),
-                borderRadius:
-                    BorderRadius.circular(AppConstants.radiusSM),
+                borderRadius: BorderRadius.circular(AppConstants.radiusSM),
               ),
               child: Icon(icon, color: color, size: 18),
             ),
@@ -1408,13 +1651,14 @@ class _QuickActionCard extends StatelessWidget {
                 label,
                 style: const TextStyle(
                   color: AppColors.textDark,
-                  fontSize: 12,
+                  fontSize: 11,
                   fontWeight: FontWeight.w600,
                 ),
                 maxLines: 2,
                 overflow: TextOverflow.ellipsis,
               ),
             ),
+            const SizedBox(width: AppConstants.spaceSM),
           ],
         ),
       ),
@@ -1450,128 +1694,140 @@ class _ChartLegendDot extends StatelessWidget {
   }
 }
 
-class _VisionProgressBar extends StatelessWidget {
-  final String label;
-  final IconData icon;
-  final double progress;
-  final String currentLabel;
-  final String targetLabel;
-  final String percentLabel;
-  final Color barColor;
-  final Color glowColor;
-
-  const _VisionProgressBar({
-    required this.label,
-    required this.icon,
-    required this.progress,
-    required this.currentLabel,
-    required this.targetLabel,
-    required this.percentLabel,
-    required this.barColor,
-    required this.glowColor,
-  });
+class _LeaderboardRow extends StatelessWidget {
+  final int rank;
+  final _FocalRanking ranking;
+  const _LeaderboardRow({required this.rank, required this.ranking});
 
   @override
   Widget build(BuildContext context) {
+    final medalColor = switch (rank) {
+      1 => AppColors.gold,
+      2 => AppColors.textGray,
+      _ => AppColors.warning,
+    };
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 6),
+      child: Row(
+        children: [
+          Container(
+            width: 28,
+            height: 28,
+            decoration: BoxDecoration(
+              color: medalColor.withValues(alpha: 0.15),
+              shape: BoxShape.circle,
+            ),
+            child: Center(
+              child: Text(
+                '$rank',
+                style: GoogleFonts.playfairDisplay(
+                  fontSize: 13,
+                  fontWeight: FontWeight.w800,
+                  color: medalColor,
+                ),
+              ),
+            ),
+          ),
+          const SizedBox(width: AppConstants.spaceMD),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  ranking.name,
+                  style: const TextStyle(
+                    fontSize: 13,
+                    fontWeight: FontWeight.w600,
+                    color: AppColors.textDark,
+                  ),
+                ),
+                Text(
+                  '${ranking.count}',
+                  style: const TextStyle(
+                      fontSize: 11, color: AppColors.textGray),
+                ),
+              ],
+            ),
+          ),
+          Text(
+            AppUtils.formatAmount(ranking.amount),
+            style: GoogleFonts.playfairDisplay(
+              fontSize: 14,
+              fontWeight: FontWeight.w800,
+              color: AppColors.primary,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _MethodBar extends StatelessWidget {
+  final Map<String, int> totals;
+  final int total;
+  const _MethodBar({required this.totals, required this.total});
+
+  Color _colorFor(String method) {
+    switch (method) {
+      case AppConstants.paymentMtnMomo:
+        return AppColors.gold;
+      case AppConstants.paymentOrangeMoney:
+        return AppColors.warning;
+      case AppConstants.paymentCash:
+        return AppColors.success;
+      default:
+        return AppColors.info;
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final l = AppLocalizations.of(context);
+    final entries = totals.entries.where((e) => e.value > 0).toList();
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        Row(
-          children: [
-            Icon(icon, color: Colors.white.withValues(alpha: 0.7), size: 17),
-            const SizedBox(width: 8),
-            Expanded(
-              child: Text(
-                label,
-                style: TextStyle(
-                  color: Colors.white.withValues(alpha: 0.85),
-                  fontSize: 14,
-                  fontWeight: FontWeight.w600,
-                ),
-              ),
-            ),
-            Container(
-              padding:
-                  const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-              decoration: BoxDecoration(
-                color: barColor.withValues(alpha: 0.2),
-                borderRadius: BorderRadius.circular(AppConstants.radiusFull),
-                border: Border.all(color: barColor.withValues(alpha: 0.5)),
-              ),
-              child: Text(
-                percentLabel,
-                style: TextStyle(
-                  color: barColor,
-                  fontSize: 13,
-                  fontWeight: FontWeight.w700,
-                ),
-              ),
-            ),
-          ],
-        ),
-        const SizedBox(height: 12),
-        Row(
-          crossAxisAlignment: CrossAxisAlignment.baseline,
-          textBaseline: TextBaseline.alphabetic,
-          children: [
-            Flexible(
-              child: Text(
-                currentLabel,
-                style: GoogleFonts.plusJakartaSans(
-                  color: Colors.white,
-                  fontSize: 28,
-                  fontWeight: FontWeight.w800,
-                ),
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-              ),
-            ),
-            const SizedBox(width: 8),
-            Padding(
-              padding: const EdgeInsets.only(bottom: 3),
-              child: Text(
-                targetLabel,
-                style: TextStyle(
-                  color: Colors.white.withValues(alpha: 0.5),
-                  fontSize: 13,
-                  fontWeight: FontWeight.w500,
-                ),
-              ),
-            ),
-          ],
-        ),
-        const SizedBox(height: 12),
         ClipRRect(
           borderRadius: BorderRadius.circular(AppConstants.radiusFull),
-          child: Stack(
-            children: [
-              Container(
-                height: 10,
-                width: double.infinity,
-                color: Colors.white.withValues(alpha: 0.1),
-              ),
-              FractionallySizedBox(
-                widthFactor: math.max(progress, 0.004),
-                child: Container(
+          child: SizedBox(
+            height: 10,
+            child: Row(
+              children: entries.map((e) {
+                return Expanded(
+                  flex: e.value,
+                  child: Container(color: _colorFor(e.key)),
+                );
+              }).toList(),
+            ),
+          ),
+        ),
+        const SizedBox(height: AppConstants.spaceMD),
+        Wrap(
+          spacing: 12,
+          runSpacing: 6,
+          children: entries.map((e) {
+            final pct = ((e.value / total) * 100).toStringAsFixed(0);
+            return Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Container(
+                  width: 10,
                   height: 10,
                   decoration: BoxDecoration(
-                    gradient: LinearGradient(
-                      colors: [
-                        barColor.withValues(alpha: 0.7),
-                        barColor,
-                      ],
-                    ),
-                    boxShadow: [
-                      BoxShadow(
-                        color: glowColor.withValues(alpha: 0.6),
-                        blurRadius: 6,
-                      ),
-                    ],
+                    color: _colorFor(e.key),
+                    shape: BoxShape.circle,
                   ),
                 ),
-              ),
-            ],
-          ),
+                const SizedBox(width: 6),
+                Text(
+                  '${l.paymentMethodName(e.key)} · $pct%',
+                  style: const TextStyle(
+                      fontSize: 11, color: AppColors.textGray),
+                ),
+              ],
+            );
+          }).toList(),
         ),
       ],
     );

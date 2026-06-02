@@ -39,6 +39,7 @@ class _AdminSettingsScreenState extends ConsumerState<AdminSettingsScreen> {
   }
 
   Future<void> _syncCounters(BuildContext context) async {
+    final l = AppLocalizations.of(context);
     final messenger = ScaffoldMessenger.of(context);
     setState(() => _syncing = true);
     try {
@@ -46,7 +47,8 @@ class _AdminSettingsScreenState extends ConsumerState<AdminSettingsScreen> {
       messenger.showSnackBar(
         SnackBar(
           content: Text(
-            '✓ ${result.members} membres · ${AppUtils.formatAmount(result.total.toInt())} synchronisés',
+            l.syncCountersResult(
+                result.members, AppUtils.formatAmount(result.total.toInt())),
             style: GoogleFonts.plusJakartaSans(fontSize: 13),
           ),
           backgroundColor: AppColors.success,
@@ -57,7 +59,7 @@ class _AdminSettingsScreenState extends ConsumerState<AdminSettingsScreen> {
       messenger.showSnackBar(
         SnackBar(
           content: Text(
-            'Erreur de synchronisation',
+            l.syncCountersError,
             style: GoogleFonts.plusJakartaSans(fontSize: 13),
           ),
           backgroundColor: AppColors.error,
@@ -212,7 +214,7 @@ class _AdminSettingsScreenState extends ConsumerState<AdminSettingsScreen> {
       _ => 'Français',
     };
 
-    final roleBadge = user.isSuperAdmin ? 'SUPER ADMINISTRATEUR' : 'ADMINISTRATEUR';
+    final roleBadge = (user.isSuperAdmin ? l.superAdmin : l.admin).toUpperCase();
 
     return Scaffold(
       backgroundColor: AppColors.bg,
@@ -319,7 +321,7 @@ class _AdminSettingsScreenState extends ConsumerState<AdminSettingsScreen> {
                         const Divider(height: 1, color: AppColors.border),
                         _InfoRow(
                           icon: Icons.email_outlined,
-                          label: 'E-mail',
+                          label: l.email,
                           value: user.email!,
                         ),
                       ],
@@ -344,6 +346,13 @@ class _AdminSettingsScreenState extends ConsumerState<AdminSettingsScreen> {
                         value: langLabel,
                         onTap: () => _showLanguagePicker(
                             context, l, currentLangCode),
+                      ),
+                      const Divider(height: 1, color: AppColors.border),
+                      _ActionTile(
+                        icon: Icons.shield_outlined,
+                        label: l.privacyPolicy,
+                        value: '',
+                        onTap: () => context.push(AppRoutes.privacyPolicy),
                       ),
                     ],
                   ),
@@ -370,15 +379,60 @@ class _AdminSettingsScreenState extends ConsumerState<AdminSettingsScreen> {
                         icon: Icons.account_balance_outlined,
                         label: l.treasuryTitle,
                         value: '',
-                        onTap: () =>
-                            context.push(AppRoutes.adminWallet),
+                        onTap: () => context.go(AppRoutes.adminWallet),
+                      ),
+                      if (user.isSuperAdmin) ...[
+                        const Divider(height: 1, color: AppColors.border),
+                        _ActionTile(
+                          icon: Icons.admin_panel_settings_outlined,
+                          label: l.manageAdmins,
+                          value: '',
+                          onTap: () => context.push(AppRoutes.adminTeam),
+                        ),
+                        const Divider(height: 1, color: AppColors.border),
+                        _ActionTile(
+                          icon: Icons.account_balance_outlined,
+                          label: l.bankDetailsTitle,
+                          value: '',
+                          onTap: () => context.push(AppRoutes.adminBankDetails),
+                        ),
+                        const Divider(height: 1, color: AppColors.border),
+                        _ActionTile(
+                          icon: Icons.sync_rounded,
+                          label: l.syncCounters,
+                          value: _syncing ? '…' : '',
+                          onTap:
+                              _syncing ? () {} : () => _syncCounters(context),
+                        ),
+                        const Divider(height: 1, color: AppColors.border),
+                        _ActionTile(
+                          icon: Icons.fact_check_outlined,
+                          label: l.auditMatricules,
+                          value: '',
+                          onTap: () => context.push(AppRoutes.adminAudit),
+                        ),
+                      ],
+                    ],
+                  ),
+                  const SizedBox(height: AppConstants.spaceLG),
+
+                  // ── Support ─────────────────────────────────
+                  _SectionHeader(title: l.contactUs),
+                  const SizedBox(height: AppConstants.spaceSM),
+                  _InfoCard(
+                    children: [
+                      _ActionTile(
+                        icon: Icons.help_outline_rounded,
+                        label: l.helpFaq,
+                        value: '',
+                        onTap: () => context.push(AppRoutes.help),
                       ),
                       const Divider(height: 1, color: AppColors.border),
                       _ActionTile(
-                        icon: Icons.sync_rounded,
-                        label: 'Synchroniser les compteurs',
-                        value: _syncing ? '…' : '',
-                        onTap: _syncing ? () {} : () => _syncCounters(context),
+                        icon: Icons.info_outline_rounded,
+                        label: l.aboutApp,
+                        value: '',
+                        onTap: () => context.push(AppRoutes.about),
                       ),
                     ],
                   ),

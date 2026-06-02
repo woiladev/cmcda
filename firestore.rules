@@ -51,7 +51,7 @@ service cloud.firestore {
       allow update: if (isOwner(userId) && isActive() &&
                         request.resource.data.diff(resource.data)
                           .affectedKeys()
-                          .hasOnly(['fcmToken','language','preferredPayment',
+                          .hasOnly(['fcmTokens','language','preferredPayment',
                                     'preferredFrequency','avatarUrl','updatedAt',
                                     'firstName','lastName','email',
                                     'region','department','city','quarter']))
@@ -70,7 +70,12 @@ service cloud.firestore {
                           .affectedKeys()
                           .hasOnly(['firstName','lastName','phone',
                                     'city','quarter','updatedAt']))
-                    || isAdmin();
+                    // Admins manage any user EXCEPT role/memberNumber — role changes
+                    // flow exclusively through the setUserRole Cloud Function.
+                    || (isAdmin() &&
+                        !request.resource.data.diff(resource.data)
+                          .affectedKeys()
+                          .hasAny(['role','memberNumber']));
       allow delete: if isSuperAdmin();
     }
 
@@ -83,7 +88,7 @@ service cloud.firestore {
                   (resource.data.memberId == request.auth.uid || isFocalOrAdmin());
       allow create: if isActive() &&
                     (request.resource.data.memberId == request.auth.uid || isFocalOrAdmin());
-      allow update: if isAdmin() &&
+      allow update: if isSuperAdmin() &&
                     request.resource.data.diff(resource.data)
                       .affectedKeys()
                       .hasOnly(['status','validatedBy','secondValidatorId',
@@ -99,14 +104,14 @@ service cloud.firestore {
                   (resource.data.focalId == request.auth.uid || isAdmin());
       allow create: if isFocal() && isActive() &&
                     request.resource.data.focalId == request.auth.uid;
+      // Focals manage their own draft (incl. linking contributionIds). Report
+      // acceptance/rejection is super_admin-only and goes through the
+      // validateFocalReport / rejectFocalReport Cloud Functions (Admin SDK),
+      // so no client may set status to 'validated'/'rejected'.
       allow update: if (isFocal() &&
                         resource.data.focalId == request.auth.uid &&
                         resource.data.status == 'draft' &&
-                        request.resource.data.status in ['draft', 'submitted'])
-                    || (isAdmin() &&
-                        request.resource.data.diff(resource.data)
-                          .affectedKeys()
-                          .hasOnly(['status','validatedBy','notes']));
+                        request.resource.data.status in ['draft', 'submitted']);
       allow delete: if isSuperAdmin();
     }
 
@@ -122,6 +127,23 @@ service cloud.firestore {
                     request.resource.data.diff(resource.data)
                       .affectedKeys().hasOnly(['read']);
       allow delete: if isAuth() && resource.data.userId == request.auth.uid;
+    }
+
+    // ── reminder_plans ──────────────────────────────────────────────────────
+    // One doc per member (doc id = memberId). Members manage their own plan;
+    // focals can create one when registering a member; admins manage all.
+    // The scheduled reminder function writes via the Admin SDK (bypasses rules).
+
+    match /reminder_plans/{planId} {
+      allow read: if isOwner(planId) || isFocalOrAdmin();
+      allow create: if isOwner(planId) || isFocal() || isAdmin();
+      allow update: if (isOwner(planId) &&
+                        request.resource.data.diff(resource.data)
+                          .affectedKeys()
+                          .hasOnly(['active','frequency','amount',
+                                    'nextReminderAt','updatedAt']))
+                    || isAdmin();
+      allow delete: if isSuperAdmin();
     }
 
     // ── audit_logs ────────────────────────────────────────────────────────
@@ -145,14 +167,15 @@ service cloud.firestore {
 
     match /wallet_accounts/{accountId} {
       allow read: if isAuth();
-      allow create, update, delete: if isAdmin();
+      allow create, update, delete: if isSuperAdmin();
     }
 
     // ── wallet_transactions ───────────────────────────────────────────────
     // Admin-only read/write; Cloud Functions write via service account (bypass).
 
     match /wallet_transactions/{txId} {
-      allow read, create, update, delete: if isAdmin();
+      allow read: if isAdmin();
+      allow create, update, delete: if isSuperAdmin();
     }
 
     // ── wallet_config ─────────────────────────────────────────────────────
@@ -161,7 +184,24 @@ service cloud.firestore {
 
     match /wallet_config/{docId} {
       allow read: if isAuth();
-      allow write: if isAdmin();
+      allow write: if isSuperAdmin();
+    }
+
+    // ── events ────────────────────────────────────────────────────────────
+    // Admins manage all events; any authenticated user reads published ones.
+
+    match /events/{eventId} {
+      allow read:   if isAuth() && (resource.data.status == 'published' || isAdmin());
+      allow create, update, delete: if isAdmin();
+    }
+
+    // ── app_config ──────────────────────────────────────────────────────────
+    // Org-wide config (e.g. bank_details shown to members for transfers).
+    // Readable by all authenticated users; only super admins can write.
+
+    match /app_config/{docId} {
+      allow read:  if isAuth();
+      allow write: if isSuperAdmin();
     }
   }
 }

@@ -12,12 +12,14 @@ class NotificationModel {
 
   // ── Type Constants ────────────────────────────────────────
   static const String typePaymentConfirmed = 'payment_confirmed';
+  static const String typePaymentRejected = 'payment_rejected';
   static const String typePaymentReminder = 'payment_reminder';
   static const String typeWelcome = 'welcome';
   static const String typeMilestone = 'milestone';
   static const String typeAdminAlert = 'admin_alert';
   static const String typeFocalReport = 'focal_report';
   static const String typeManualPayment = 'manual_payment';
+  static const String typeRoleChange = 'role_change';
 
   const NotificationModel({
     required this.id,

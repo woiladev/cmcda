@@ -1,0 +1,204 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>CMCDA Platform — Politique de confidentialité</title>
+  <style>
+    :root { --green: #1A6B3C; --dark: #1A1A1A; --gray: #5C5C5C; --border: #E5E7EB; }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif;
+      color: var(--dark);
+      line-height: 1.6;
+      background: #fff;
+    }
+    header {
+      background: var(--green);
+      color: #fff;
+      padding: 28px 20px;
+    }
+    header .wrap { max-width: 760px; margin: 0 auto; }
+    header h1 { margin: 0 0 6px; font-size: 22px; }
+    header p { margin: 0; opacity: 0.9; font-size: 14px; }
+    .langbar { max-width: 760px; margin: 16px auto 0; padding: 0 20px; }
+    .langbar button {
+      border: 1px solid var(--border);
+      background: #fff;
+      color: var(--green);
+      padding: 6px 14px;
+      border-radius: 100px;
+      font-size: 13px;
+      cursor: pointer;
+      margin-right: 8px;
+    }
+    .langbar button.active { background: var(--green); color: #fff; border-color: var(--green); }
+    main { max-width: 760px; margin: 0 auto; padding: 8px 20px 60px; }
+    .updated { color: var(--gray); font-size: 13px; margin: 16px 0 24px; }
+    section { display: none; }
+    section.active { display: block; }
+    h2 { color: var(--green); font-size: 18px; margin: 28px 0 8px; }
+    p, li { color: #333; font-size: 15px; }
+    a { color: var(--green); }
+    [dir="rtl"] { text-align: right; }
+    footer { max-width: 760px; margin: 0 auto; padding: 24px 20px 60px; color: var(--gray); font-size: 13px; }
+  </style>
+</head>
+<body>
+  <header>
+    <div class="wrap">
+      <h1>CMCDA Platform</h1>
+      <p>Politique de confidentialité · Privacy Policy · سياسة الخصوصية</p>
+    </div>
+  </header>
+
+  <div class="langbar">
+    <button data-lang="fr" class="active" onclick="setLang('fr')">Français</button>
+    <button data-lang="en" onclick="setLang('en')">English</button>
+    <button data-lang="ar" onclick="setLang('ar')">العربية</button>
+  </div>
+
+  <main>
+    <p class="updated">Dernière mise à jour / Last updated / آخر تحديث : 2026-05-23</p>
+
+    <!-- ── French ── -->
+    <section id="fr" class="active" dir="ltr">
+      <h2>Introduction</h2>
+      <p>La présente politique de confidentialité décrit comment CMCDA (Association Musulmane de Développement Communautaire du Cameroun), via l'application CMCDA Platform développée par WoilaTech (Ngaoundéré, Cameroun), collecte, utilise et protège vos données personnelles. En utilisant l'application, vous acceptez les pratiques décrites ci-dessous.</p>
+
+      <h2>Données que nous collectons</h2>
+      <ul>
+        <li>Identité et contact : prénom, nom, numéro de téléphone, adresse e-mail, région, département, ville et quartier.</li>
+        <li>Compte : numéro de membre (ex. CM-000001), rôle, statut et total des cotisations.</li>
+        <li>Paiements : enregistrements de cotisations (montant, méthode, période, statut) et, pour les virements bancaires, l'image justificative que vous téléversez.</li>
+        <li>Données techniques : jeton de notification (FCM) de votre appareil et langue préférée.</li>
+      </ul>
+
+      <h2>Comment nous utilisons vos données</h2>
+      <p>Nous utilisons vos données pour : créer et gérer votre compte de membre, enregistrer et valider vos cotisations, émettre des reçus, vous envoyer des notifications (rappels et confirmations de paiement), produire des rapports internes et assurer la conformité de l'association. Nous ne vendons jamais vos données.</p>
+
+      <h2>Partage des données</h2>
+      <p>Vos données ne sont accessibles qu'aux administrateurs et responsables habilités de CMCDA, dans la limite de leurs fonctions. Elles sont traitées par Google Firebase, notre prestataire d'infrastructure. Nous ne partageons pas vos données avec des tiers à des fins commerciales.</p>
+
+      <h2>Stockage et sécurité</h2>
+      <p>Vos données sont hébergées sur Google Firebase (Authentication, Cloud Firestore, Cloud Storage, Cloud Messaging et Cloud Functions). Les images justificatives de virement sont stockées de manière sécurisée et ne sont lisibles que par vous et le personnel habilité. L'accès est contrôlé par des règles de sécurité et l'authentification Firebase.</p>
+
+      <h2>Conservation des données</h2>
+      <p>Nous conservons vos données aussi longtemps que votre compte est actif ou que cela est nécessaire pour assurer le suivi des cotisations et respecter nos obligations. Vous pouvez demander la suppression de votre compte à tout moment.</p>
+
+      <h2>Vos droits</h2>
+      <p>Vous avez le droit d'accéder à vos données, de les corriger, de demander leur suppression et de vous opposer à certains traitements. Pour exercer ces droits, contactez-nous aux coordonnées ci-dessous.</p>
+
+      <h2>Notifications push</h2>
+      <p>Avec votre accord, nous envoyons des notifications via Firebase Cloud Messaging (rappels de cotisation, confirmations de paiement). Vous pouvez les désactiver depuis les paramètres de l'application ou de votre appareil.</p>
+
+      <h2>Suppression de compte</h2>
+      <p>Pour supprimer votre compte et les données associées, envoyez une demande à <a href="mailto:contact@cmcda.cm">contact@cmcda.cm</a> depuis l'adresse e-mail liée à votre compte, ou contactez un administrateur. Certaines données de cotisation peuvent être conservées de manière anonymisée pour les besoins comptables de l'association.</p>
+
+      <h2>Contact</h2>
+      <p>CMCDA — WoilaTech, Ngaoundéré, Cameroun<br>
+      E-mail : <a href="mailto:contact@cmcda.cm">contact@cmcda.cm</a><br>
+      Téléphone : +237 699 000 000<br>
+      Site web : <a href="https://cmcda.cm">https://cmcda.cm</a></p>
+    </section>
+
+    <!-- ── English ── -->
+    <section id="en" dir="ltr">
+      <h2>Introduction</h2>
+      <p>This privacy policy explains how CMCDA (Cameroon Muslim Community Development Association), through the CMCDA Platform app developed by WoilaTech (Ngaoundéré, Cameroon), collects, uses and protects your personal data. By using the app, you agree to the practices described below.</p>
+
+      <h2>Data we collect</h2>
+      <ul>
+        <li>Identity and contact: first name, last name, phone number, email address, region, department, city and neighbourhood.</li>
+        <li>Account: member number (e.g. CM-000001), role, status and total contributions.</li>
+        <li>Payments: contribution records (amount, method, period, status) and, for bank transfers, the proof-of-transfer image you upload.</li>
+        <li>Technical data: your device's notification token (FCM) and preferred language.</li>
+      </ul>
+
+      <h2>How we use your data</h2>
+      <p>We use your data to: create and manage your member account, record and validate your contributions, issue receipts, send you notifications (reminders and payment confirmations), produce internal reports and meet the association's compliance needs. We never sell your data.</p>
+
+      <h2>Data sharing</h2>
+      <p>Your data is only accessible to authorised CMCDA administrators and officers, within the scope of their duties. It is processed by Google Firebase, our infrastructure provider. We do not share your data with third parties for commercial purposes.</p>
+
+      <h2>Storage and security</h2>
+      <p>Your data is hosted on Google Firebase (Authentication, Cloud Firestore, Cloud Storage, Cloud Messaging and Cloud Functions). Proof-of-transfer images are stored securely and are readable only by you and authorised staff. Access is controlled by security rules and Firebase authentication.</p>
+
+      <h2>Data retention</h2>
+      <p>We keep your data for as long as your account is active or as needed to track contributions and meet our obligations. You can request deletion of your account at any time.</p>
+
+      <h2>Your rights</h2>
+      <p>You have the right to access your data, correct it, request its deletion and object to certain processing. To exercise these rights, contact us using the details below.</p>
+
+      <h2>Push notifications</h2>
+      <p>With your consent, we send notifications via Firebase Cloud Messaging (contribution reminders, payment confirmations). You can disable them from the app settings or your device settings.</p>
+
+      <h2>Account deletion</h2>
+      <p>To delete your account and associated data, send a request to <a href="mailto:contact@cmcda.cm">contact@cmcda.cm</a> from the email address linked to your account, or contact an administrator. Some contribution data may be retained in anonymised form for the association's accounting purposes.</p>
+
+      <h2>Contact</h2>
+      <p>CMCDA — WoilaTech, Ngaoundéré, Cameroon<br>
+      Email: <a href="mailto:contact@cmcda.cm">contact@cmcda.cm</a><br>
+      Phone: +237 699 000 000<br>
+      Website: <a href="https://cmcda.cm">https://cmcda.cm</a></p>
+    </section>
+
+    <!-- ── Arabic ── -->
+    <section id="ar" dir="rtl">
+      <h2>مقدمة</h2>
+      <p>توضح سياسة الخصوصية هذه كيفية قيام جمعية التنمية المجتمعية الإسلامية بالكاميرون (CMCDA)، عبر تطبيق CMCDA Platform الذي طورته شركة WoilaTech (نغاونديري، الكاميرون)، بجمع بياناتك الشخصية واستخدامها وحمايتها. باستخدامك للتطبيق، فإنك توافق على الممارسات الموضحة أدناه.</p>
+
+      <h2>البيانات التي نجمعها</h2>
+      <ul>
+        <li>الهوية والتواصل: الاسم الأول، اسم العائلة، رقم الهاتف، البريد الإلكتروني، المنطقة، المقاطعة، المدينة والحي.</li>
+        <li>الحساب: رقم العضوية (مثل CM-000001)، الدور، الحالة وإجمالي المساهمات.</li>
+        <li>المدفوعات: سجلات المساهمات (المبلغ، الطريقة، الفترة، الحالة)، وبالنسبة للتحويلات البنكية صورة إثبات التحويل التي ترفعها.</li>
+        <li>البيانات التقنية: رمز الإشعارات (FCM) الخاص بجهازك واللغة المفضلة.</li>
+      </ul>
+
+      <h2>كيف نستخدم بياناتك</h2>
+      <p>نستخدم بياناتك من أجل: إنشاء حساب العضوية وإدارته، تسجيل مساهماتك والتحقق منها، إصدار الإيصالات، إرسال الإشعارات إليك (التذكيرات وتأكيدات الدفع)، إعداد التقارير الداخلية وضمان امتثال الجمعية. نحن لا نبيع بياناتك أبدًا.</p>
+
+      <h2>مشاركة البيانات</h2>
+      <p>لا يمكن الوصول إلى بياناتك إلا للمسؤولين والموظفين المخولين في CMCDA ضمن نطاق مهامهم. تتم معالجتها بواسطة Google Firebase، مزود البنية التحتية لدينا. نحن لا نشارك بياناتك مع أطراف ثالثة لأغراض تجارية.</p>
+
+      <h2>التخزين والأمان</h2>
+      <p>تُستضاف بياناتك على Google Firebase (المصادقة، Cloud Firestore، Cloud Storage، Cloud Messaging وCloud Functions). تُخزَّن صور إثبات التحويل بشكل آمن ولا يمكن قراءتها إلا من قبلك ومن قبل الموظفين المخولين. يتم التحكم في الوصول عبر قواعد الأمان ومصادقة Firebase.</p>
+
+      <h2>الاحتفاظ بالبيانات</h2>
+      <p>نحتفظ ببياناتك طالما كان حسابك نشطًا أو حسب الحاجة لتتبع المساهمات والوفاء بالتزاماتنا. يمكنك طلب حذف حسابك في أي وقت.</p>
+
+      <h2>حقوقك</h2>
+      <p>يحق لك الوصول إلى بياناتك وتصحيحها وطلب حذفها والاعتراض على بعض عمليات المعالجة. لممارسة هذه الحقوق، يرجى التواصل معنا عبر البيانات الموضحة أدناه.</p>
+
+      <h2>الإشعارات</h2>
+      <p>بموافقتك، نرسل إشعارات عبر Firebase Cloud Messaging (تذكيرات المساهمة، تأكيدات الدفع). يمكنك تعطيلها من إعدادات التطبيق أو إعدادات جهازك.</p>
+
+      <h2>حذف الحساب</h2>
+      <p>لحذف حسابك والبيانات المرتبطة به، أرسل طلبًا إلى <a href="mailto:contact@cmcda.cm">contact@cmcda.cm</a> من عنوان البريد الإلكتروني المرتبط بحسابك، أو تواصل مع أحد المسؤولين. قد يتم الاحتفاظ ببعض بيانات المساهمات بشكل مجهول الهوية لأغراض محاسبية للجمعية.</p>
+
+      <h2>التواصل</h2>
+      <p>CMCDA — WoilaTech، نغاونديري، الكاميرون<br>
+      البريد الإلكتروني: <a href="mailto:contact@cmcda.cm">contact@cmcda.cm</a><br>
+      الهاتف: +237 699 000 000<br>
+      الموقع الإلكتروني: <a href="https://cmcda.cm">https://cmcda.cm</a></p>
+    </section>
+  </main>
+
+  <footer>© 2026 CMCDA · WoilaTech</footer>
+
+  <script>
+    function setLang(lang) {
+      document.querySelectorAll('main section').forEach(function (s) {
+        s.classList.toggle('active', s.id === lang);
+      });
+      document.querySelectorAll('.langbar button').forEach(function (b) {
+        b.classList.toggle('active', b.dataset.lang === lang);
+      });
+      document.documentElement.lang = lang;
+      document.documentElement.dir = (lang === 'ar') ? 'rtl' : 'ltr';
+    }
+  </script>
+</body>
+</html>

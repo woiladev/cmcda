@@ -1,4 +1,8 @@
+import 'dart:async';
+
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:firebase_storage/firebase_storage.dart';
+import 'package:image_picker/image_picker.dart';
 import '../models/contribution_model.dart';
 import '../../core/constants/app_constants.dart';
 import '../../core/utils/app_utils.dart';
@@ -11,6 +15,13 @@ class ContributionRepository {
 
   // ── Create ────────────────────────────────────────────────
 
+  /// Creates a contribution. Offline-safe: the doc id is generated locally and
+  /// the write is fire-and-forget so it persists to the local cache and the
+  /// caller returns immediately, syncing to the server on reconnect. The
+  /// receiptNumber is left empty and assigned server-side by the
+  /// onContributionCreated Cloud Function (so it works for offline-created docs
+  /// too). Do NOT await the write Futures: they only complete on server ack,
+  /// which never happens while offline.
   Future<ContributionModel> createContribution({
     required String memberId,
     required String memberName,
@@ -23,16 +34,17 @@ class ContributionRepository {
     String? paidForId,
     String? focalReportId,
     String? notes,
+    String? proofUrl,
   }) async {
-    final receiptNumber = await generateReceiptNumber();
     final effectivePeriod =
         period ?? AppUtils.getPeriodForDate(DateTime.now());
     final isCashOrBank = paymentMethod == AppConstants.paymentCash ||
         paymentMethod == AppConstants.paymentBankTransfer;
     final now = Timestamp.now();
+    final ref = _col.doc(); // local id, no network round-trip
 
     final contribution = ContributionModel(
-      id: '',
+      id: ref.id,
       memberId: memberId,
       memberName: memberName,
       memberNumber: memberNumber,
@@ -43,32 +55,41 @@ class ContributionRepository {
       status: isCashOrBank
           ? AppConstants.statusPending
           : AppConstants.statusConfirmed,
-      receiptNumber: receiptNumber,
+      receiptNumber: '', // assigned server-side by onContributionCreated
       recordedBy: recordedBy,
       paidForId: paidForId,
       focalReportId: focalReportId,
       notes: notes,
+      proofUrl: proofUrl,
       validationRequired: isCashOrBank,
       createdAt: now,
       confirmedAt: isCashOrBank ? null : now,
     );
 
-    final doc = await _col.add(contribution.toFirestore());
+    unawaited(ref.set(contribution.toFirestore()));
 
     // Mobile money is auto-confirmed — update the member's and platform totals.
     // Skip if memberId is empty (unregistered member recorded by focal).
     if (!isCashOrBank && memberId.isNotEmpty) {
-      await _db
+      unawaited(_db
           .collection(AppConstants.usersCollection)
           .doc(memberId)
-          .update({'totalContributed': FieldValue.increment(amount)});
-      await _db
+          .update({'totalContributed': FieldValue.increment(amount)}));
+      unawaited(_db
           .collection(AppConstants.countersCollection)
           .doc('platform')
-          .set({'totalContributed': FieldValue.increment(amount)}, SetOptions(merge: true));
+          .set({'totalContributed': FieldValue.increment(amount)},
+              SetOptions(merge: true)));
     }
 
-    return ContributionModel.fromFirestore(await doc.get());
+    return contribution;
+  }
+
+  /// Streams a single contribution doc by id — used by the payment success
+  /// screen to display the receipt number once the server assigns it.
+  Stream<ContributionModel?> streamContribution(String id) {
+    return _col.doc(id).snapshots().map(
+        (d) => d.exists ? ContributionModel.fromFirestore(d) : null);
   }
 
   // ── Read ──────────────────────────────────────────────────
@@ -109,11 +130,11 @@ class ContributionRepository {
   /// until a second validator confirms (for cash/bank transfers).
   Future<void> validatePayment(
       String contributionId, String validatorId) async {
-    await _col.doc(contributionId).update({
+    unawaited(_col.doc(contributionId).update({
       'validatedBy': validatorId,
       // If no second validation is required, confirm immediately.
       // The second-validator requirement is handled by secondValidatePayment.
-    });
+    }));
   }
 
   /// Second validation: confirms the payment after dual-approval.
@@ -124,31 +145,74 @@ class ContributionRepository {
     final memberId = data?['memberId'] as String?;
     final amount = (data?['amount'] as num?)?.toInt() ?? 0;
 
-    await _col.doc(contributionId).update({
+    unawaited(_col.doc(contributionId).update({
       'secondValidatorId': validatorId,
       'status': AppConstants.statusConfirmed,
       'confirmedAt': Timestamp.now(),
-    });
+    }));
 
     if (memberId != null && amount > 0) {
-      await _db
+      unawaited(_db
           .collection(AppConstants.usersCollection)
           .doc(memberId)
-          .update({'totalContributed': FieldValue.increment(amount)});
-      await _db
+          .update({'totalContributed': FieldValue.increment(amount)}));
+      unawaited(_db
           .collection(AppConstants.countersCollection)
           .doc('platform')
-          .set({'totalContributed': FieldValue.increment(amount)}, SetOptions(merge: true));
+          .set({'totalContributed': FieldValue.increment(amount)},
+              SetOptions(merge: true)));
+    }
+  }
+
+  /// Single-step approval for bank transfers: confirms and credits totals in
+  /// one action (no second validator). Mirrors secondValidatePayment's effect.
+  Future<void> confirmContribution(
+      String contributionId, String adminId) async {
+    final snap = await _col.doc(contributionId).get();
+    final data = snap.data() as Map<String, dynamic>?;
+    final memberId = data?['memberId'] as String?;
+    final amount = (data?['amount'] as num?)?.toInt() ?? 0;
+
+    unawaited(_col.doc(contributionId).update({
+      'validatedBy': adminId,
+      'status': AppConstants.statusConfirmed,
+      'confirmedAt': Timestamp.now(),
+    }));
+
+    if (memberId != null && memberId.isNotEmpty && amount > 0) {
+      unawaited(_db
+          .collection(AppConstants.usersCollection)
+          .doc(memberId)
+          .update({'totalContributed': FieldValue.increment(amount)}));
+      unawaited(_db
+          .collection(AppConstants.countersCollection)
+          .doc('platform')
+          .set({'totalContributed': FieldValue.increment(amount)},
+              SetOptions(merge: true)));
     }
   }
 
   Future<void> rejectPayment(
       String contributionId, String adminId, String reason) async {
-    await _col.doc(contributionId).update({
+    unawaited(_col.doc(contributionId).update({
       'status': AppConstants.statusFailed,
       'validatedBy': adminId,
       'notes': reason,
-    });
+    }));
+  }
+
+  // ── Proof of transfer ─────────────────────────────────────
+
+  /// Uploads a proof-of-transfer image and returns its download URL.
+  /// Uses putData (not putFile) so it works on Web as well as Android.
+  Future<String> uploadProof(XFile file, String uid) async {
+    final stamp = DateTime.now().microsecondsSinceEpoch;
+    final ref = FirebaseStorage.instance.ref('receipts/$uid/$stamp.jpg');
+    await ref.putData(
+      await file.readAsBytes(),
+      SettableMetadata(contentType: 'image/jpeg'),
+    );
+    return ref.getDownloadURL();
   }
 
   // ── Aggregates ────────────────────────────────────────────
@@ -201,58 +265,40 @@ class ContributionRepository {
         .map((s) => (s.data()?['totalContributed'] as num?)?.toDouble() ?? 0.0);
   }
 
-  Stream<int> streamMemberCount() {
-    return _db
-        .collection(AppConstants.countersCollection)
-        .doc('members')
-        .snapshots()
-        .map((s) => (s.data()?['count'] as num?)?.toInt() ?? 0);
-  }
-
-  /// Admin-only: recomputes the platform counters from Firestore ground truth.
-  /// Sets counters/members.count and counters/platform.totalContributed.
+  /// Admin-only: recomputes the platform contribution total from ground truth.
+  /// Sets counters/platform.totalContributed only.
+  ///
+  /// Deliberately does NOT touch counters/members.count: that counter is the
+  /// matricule sequence (see AuthRepository.generateMemberNumber) and must only
+  /// ever move forward. Resetting it here to the live member-doc count moved it
+  /// *backward* whenever a member was promoted to staff or a doc was deleted,
+  /// which made new signups re-issue matricules already in use. The displayed
+  /// member total now counts user documents directly, so this no longer needs
+  /// to write that counter. To repair the sequence + existing duplicates, use
+  /// the repairMemberNumbers Cloud Function (Admin → Audit screen).
+  ///
+  /// Uses getDocs() instead of aggregate queries because Firestore blocks
+  /// count()/sum() when security rules reference get() for role checks.
   Future<({int members, double total})> backfillPlatformCounters() async {
-    final userCountSnap = await _db
-        .collection(AppConstants.usersCollection)
-        .count()
-        .get();
-    final memberCount = userCountSnap.count ?? 0;
+    final usersSnap =
+        await _db.collection(AppConstants.usersCollection).get();
+    final memberCount = usersSnap.docs.length;
 
     final contribSnap = await _db
         .collection(AppConstants.contributionsCollection)
         .where('status', isEqualTo: AppConstants.statusConfirmed)
-        .aggregate(sum('amount'))
         .get();
-    final totalContributed = contribSnap.getSum('amount') ?? 0.0;
+    final totalContributed = contribSnap.docs.fold<double>(
+      0.0,
+      (acc, doc) =>
+          acc + ((doc.data()['amount'] as num?)?.toDouble() ?? 0.0),
+    );
 
-    await _db
-        .collection(AppConstants.countersCollection)
-        .doc('members')
-        .set({'count': memberCount});
     await _db
         .collection(AppConstants.countersCollection)
         .doc('platform')
         .set({'totalContributed': totalContributed});
 
     return (members: memberCount, total: totalContributed);
-  }
-
-  // ── Receipt Number ────────────────────────────────────────
-
-  /// Atomically increments the receipt counter.
-  /// Format: RCP-000001
-  Future<String> generateReceiptNumber() async {
-    final counterRef = _db
-        .collection(AppConstants.countersCollection)
-        .doc('receipts');
-
-    int newCount = 0;
-    await _db.runTransaction((tx) async {
-      final snap = await tx.get(counterRef);
-      newCount = ((snap.data()?['count'] as num?)?.toInt() ?? 0) + 1;
-      tx.set(counterRef, {'count': newCount}, SetOptions(merge: true));
-    });
-
-    return '${AppConstants.receiptPrefix}${newCount.toString().padLeft(6, '0')}';
   }
 }

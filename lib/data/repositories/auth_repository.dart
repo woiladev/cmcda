@@ -2,17 +2,21 @@ import 'dart:convert';
 import 'dart:math';
 
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:cloud_functions/cloud_functions.dart';
 import 'package:crypto/crypto.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:google_sign_in/google_sign_in.dart';
 import 'package:sign_in_with_apple/sign_in_with_apple.dart';
 import '../models/user_model.dart';
 import '../../core/constants/app_constants.dart';
+import '../../core/services/notification_service.dart';
+import 'reminder_plan_repository.dart';
 
 class AuthRepository {
   final FirebaseAuth _auth = FirebaseAuth.instance;
   final FirebaseFirestore _db = FirebaseFirestore.instance;
   final GoogleSignIn _googleSignIn = GoogleSignIn();
+  final ReminderPlanRepository _reminderPlans = ReminderPlanRepository();
 
   // ── Auth State ────────────────────────────────────────────
 
@@ -70,6 +74,12 @@ class AuthRepository {
         .doc(uid)
         .set(user.toFirestore());
 
+    await _reminderPlans.upsertForMember(uid, preferredFrequency);
+
+    // Register the FCM token now the doc exists — the authStateChanges save
+    // fired before createUserWithEmailAndPassword's doc was written.
+    await NotificationService.instance.registerToken(uid);
+
     return user;
   }
 
@@ -115,38 +125,9 @@ class AuthRepository {
     final existing = await getUserById(firebaseUser.uid);
     if (existing != null) return existing;
 
-    // First-time Google login — create a minimal profile.
-    // The signup screen will collect region/department on next step.
-    // Region unknown at this point → Cmr- prefix; number stays after region is filled.
-    final memberNumber = await generateMemberNumber('');
-    final now = Timestamp.now();
-    final nameParts = (firebaseUser.displayName ?? '').trim().split(' ');
-
-    final newUser = UserModel(
-      id: firebaseUser.uid,
-      firstName: nameParts.isNotEmpty ? nameParts.first : '',
-      lastName: nameParts.length > 1 ? nameParts.sublist(1).join(' ') : '',
-      phone: firebaseUser.phoneNumber ?? '',
-      email: firebaseUser.email,
-      region: '',
-      department: '',
-      role: AppConstants.roleMember,
-      memberNumber: memberNumber,
-      status: AppConstants.userStatusActive,
-      avatarUrl: firebaseUser.photoURL,
-      preferredPayment: AppConstants.paymentMtnMomo,
-      preferredFrequency: AppConstants.periodMonthly,
-      language: AppConstants.defaultLocale,
-      createdAt: now,
-      updatedAt: now,
-    );
-
-    await _db
-        .collection(AppConstants.usersCollection)
-        .doc(firebaseUser.uid)
-        .set(newUser.toFirestore());
-
-    return newUser;
+    // New Google user — return null so CompleteProfileScreen collects region
+    // and generates the correct region-prefixed member number.
+    return null;
   }
 
   Future<void> signOutGoogle() async {
@@ -195,34 +176,9 @@ class AuthRepository {
     final existing = await getUserById(firebaseUser.uid);
     if (existing != null) return existing;
 
-    // Region unknown at Apple sign-in → Cmr- prefix; number stays after region is filled.
-    final memberNumber = await generateMemberNumber('');
-    final now = Timestamp.now();
-
-    final newUser = UserModel(
-      id: firebaseUser.uid,
-      firstName: appleCredential.givenName ?? '',
-      lastName: appleCredential.familyName ?? '',
-      phone: '',
-      email: appleCredential.email ?? firebaseUser.email,
-      region: '',
-      department: '',
-      role: AppConstants.roleMember,
-      memberNumber: memberNumber,
-      status: AppConstants.userStatusActive,
-      preferredPayment: AppConstants.paymentMtnMomo,
-      preferredFrequency: AppConstants.periodMonthly,
-      language: AppConstants.defaultLocale,
-      createdAt: now,
-      updatedAt: now,
-    );
-
-    await _db
-        .collection(AppConstants.usersCollection)
-        .doc(firebaseUser.uid)
-        .set(newUser.toFirestore());
-
-    return newUser;
+    // New Apple user — return null so CompleteProfileScreen collects region
+    // and generates the correct region-prefixed member number.
+    return null;
   }
 
   // ── Apple Sign-In helpers ─────────────────────────────────
@@ -289,34 +245,9 @@ class AuthRepository {
     final existing = await getUserById(firebaseUser.uid);
     if (existing != null) return existing;
 
-    // New user — create minimal member profile
-    final memberNumber = await generateMemberNumber(region);
-    final now = Timestamp.now();
-
-    final newUser = UserModel(
-      id: firebaseUser.uid,
-      firstName: firstName,
-      lastName: lastName,
-      phone: firebaseUser.phoneNumber ?? '',
-      email: firebaseUser.email,
-      region: region,
-      department: department,
-      role: AppConstants.roleMember,
-      memberNumber: memberNumber,
-      status: AppConstants.userStatusActive,
-      preferredPayment: AppConstants.paymentMtnMomo,
-      preferredFrequency: AppConstants.periodMonthly,
-      language: AppConstants.defaultLocale,
-      createdAt: now,
-      updatedAt: now,
-    );
-
-    await _db
-        .collection(AppConstants.usersCollection)
-        .doc(firebaseUser.uid)
-        .set(newUser.toFirestore());
-
-    return newUser;
+    // New phone user — return null so CompleteProfileScreen collects region
+    // and generates the correct region-prefixed member number.
+    return null;
   }
 
   // ═══════════════════════════════════════════════════════════
@@ -324,6 +255,7 @@ class AuthRepository {
   // ═══════════════════════════════════════════════════════════
 
   Future<void> signOut() async {
+    await NotificationService.instance.removeTokenOnSignOut();
     if (await _googleSignIn.isSignedIn()) await _googleSignIn.signOut();
     await _auth.signOut();
   }
@@ -352,12 +284,150 @@ class AuthRepository {
         .update({...fields, 'updatedAt': Timestamp.now()});
   }
 
+  /// Assigns [role] to [uid] via the super-admin-gated Cloud Function, which
+  /// updates the Firestore doc, the auth custom claim, and the audit log.
+  /// Must be called by a super_admin; throws [FirebaseFunctionsException] otherwise.
+  Future<void> setUserRole(String uid, String role) async {
+    final callable = FirebaseFunctions.instanceFor(region: 'europe-west1')
+        .httpsCallable('setUserRole');
+    await callable.call<dynamic>({'uid': uid, 'role': role});
+  }
+
+  /// Repairs the matricule namespace via the super-admin-gated Cloud Function:
+  /// reassigns empty/duplicate member numbers and reseeds the sequence counter
+  /// so future signups never collide. Returns how many docs were scanned and
+  /// repaired, plus the new counter high-water mark.
+  /// Must be called by a super_admin; throws [FirebaseFunctionsException] otherwise.
+  Future<({int scanned, int repaired, int counter})>
+      repairMemberNumbers() async {
+    final callable = FirebaseFunctions.instanceFor(region: 'europe-west1')
+        .httpsCallable('repairMemberNumbers');
+    final result = await callable.call<dynamic>();
+    final data = Map<String, dynamic>.from(result.data as Map);
+    return (
+      scanned: (data['scanned'] as num?)?.toInt() ?? 0,
+      repaired: (data['repaired'] as num?)?.toInt() ?? 0,
+      counter: (data['counter'] as num?)?.toInt() ?? 0,
+    );
+  }
+
   Future<void> updateFcmToken(String userId, String token) async {
-    await updateProfile(userId, {'fcmToken': token});
+    await _db.collection(AppConstants.usersCollection).doc(userId).update({
+      'fcmTokens': FieldValue.arrayUnion([token]),
+      'updatedAt': Timestamp.now(),
+    });
   }
 
   Future<void> updateLanguage(String userId, String languageCode) async {
     await updateProfile(userId, {'language': languageCode});
+  }
+
+  // ── Complete Profile (social / phone sign-up) ────────────
+
+  /// Called from CompleteProfileScreen after Google, Apple, or phone OTP
+  /// auth for new users. Generates the member number using the correct
+  /// region prefix and writes the full Firestore user document.
+  Future<UserModel> completeProfile({
+    required String uid,
+    required String firstName,
+    required String lastName,
+    required String phone,
+    required String region,
+    required String department,
+    String? city,
+    String? quarter,
+    String? email,
+    String? avatarUrl,
+    String preferredPayment = AppConstants.paymentMtnMomo,
+    String preferredFrequency = AppConstants.periodMonthly,
+    String language = AppConstants.defaultLocale,
+  }) async {
+    final memberNumber = await generateMemberNumber(region);
+    final now = Timestamp.now();
+
+    final user = UserModel(
+      id: uid,
+      firstName: firstName,
+      lastName: lastName,
+      phone: phone,
+      email: email,
+      region: region,
+      department: department,
+      city: city,
+      quarter: quarter,
+      role: AppConstants.roleMember,
+      memberNumber: memberNumber,
+      status: AppConstants.userStatusActive,
+      avatarUrl: avatarUrl,
+      preferredPayment: preferredPayment,
+      preferredFrequency: preferredFrequency,
+      language: language,
+      createdAt: now,
+      updatedAt: now,
+    );
+
+    await _db
+        .collection(AppConstants.usersCollection)
+        .doc(uid)
+        .set(user.toFirestore());
+
+    await _reminderPlans.upsertForMember(uid, preferredFrequency);
+
+    // Register the FCM token now the doc exists — for Google/Apple/Phone
+    // sign-ups the authStateChanges save fired before this doc was written.
+    await NotificationService.instance.registerToken(uid);
+
+    return user;
+  }
+
+  // ── Register member by focal officer ─────────────────────
+
+  /// Creates a Firestore user doc for a member registered on the spot during
+  /// a focal session. The member has no Firebase Auth account yet — the doc
+  /// is created with a Firestore-auto ID. Matricule is generated atomically
+  /// using the same counter as self-signups, so numbering stays consistent
+  /// across all entry paths.
+  Future<UserModel> registerMemberByFocal({
+    required String firstName,
+    required String lastName,
+    required String phone,
+    required String region,
+    required String department,
+    String? city,
+    String? quarter,
+    required String focalId,
+  }) async {
+    final docRef = _db.collection(AppConstants.usersCollection).doc();
+    final memberNumber = await generateMemberNumber(region);
+    final now = Timestamp.now();
+
+    final user = UserModel(
+      id: docRef.id,
+      firstName: firstName,
+      lastName: lastName,
+      phone: phone,
+      region: region,
+      department: department,
+      city: city,
+      quarter: quarter,
+      role: AppConstants.roleMember,
+      memberNumber: memberNumber,
+      status: AppConstants.userStatusActive,
+      preferredPayment: AppConstants.paymentCash,
+      preferredFrequency: AppConstants.periodMonthly,
+      language: AppConstants.defaultLocale,
+      createdAt: now,
+      updatedAt: now,
+    );
+
+    await docRef.set({
+      ...user.toFirestore(),
+      'registeredByFocalId': focalId,
+    });
+
+    await _reminderPlans.upsertForMember(docRef.id, AppConstants.periodMonthly);
+
+    return user;
   }
 
   // ── Member Number ────────────────────────────────────────

@@ -219,6 +219,33 @@ class WalletRepository {
     return Map<String, dynamic>.from(result.data as Map);
   }
 
+  DocumentReference get _regionTotals => _db
+      .collection(AppConstants.walletConfigCollection)
+      .doc(AppConstants.walletRegionTotalsDoc);
+
+  /// Streams cumulative confirmed contributions per region:
+  /// { regionName → totalFCFA }. The `updated_at` metadata key is filtered out.
+  Stream<Map<String, int>> watchRegionTotals() {
+    return _regionTotals.snapshots().map((s) {
+      final d = s.data() as Map<String, dynamic>? ?? {};
+      final out = <String, int>{};
+      d.forEach((k, v) {
+        if (k == 'updated_at') return;
+        if (v is num) out[k] = v.toInt();
+      });
+      return out;
+    });
+  }
+
+  /// Recomputes region_totals from all confirmed contributions (super-admin).
+  /// Returns { regions, total }.
+  Future<Map<String, dynamic>> backfillRegionTotals() async {
+    final callable = FirebaseFunctions.instanceFor(region: 'europe-west1')
+        .httpsCallable('backfillRegionTotals');
+    final result = await callable.call<Map<String, dynamic>>();
+    return Map<String, dynamic>.from(result.data as Map);
+  }
+
   /// Fetches all transactions and returns a sorted list of distinct
   /// non-empty category strings.
   Future<List<String>> getCategories() async {

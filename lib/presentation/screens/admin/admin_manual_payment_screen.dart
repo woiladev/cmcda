@@ -5,7 +5,10 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:intl/intl.dart';
 
+import 'dart:async';
+
 import '../../../core/constants/app_constants.dart';
+import '../../../core/l10n/app_localizations.dart';
 import '../../../core/services/notification_service.dart';
 import '../../../core/services/router_service.dart';
 import '../../../core/theme/app_theme.dart';
@@ -57,6 +60,7 @@ class _AdminManualPaymentScreenState
   final _searchCtrl = TextEditingController();
   String _searchQuery = '';
   UserModel? _selectedMember;
+  Timer? _searchDebounce;
 
   // Payment form
   String _periodType = AppConstants.periodMonthly;
@@ -76,10 +80,18 @@ class _AdminManualPaymentScreenState
 
   @override
   void dispose() {
+    _searchDebounce?.cancel();
     _searchCtrl.dispose();
     _amountCtrl.dispose();
     _notesCtrl.dispose();
     super.dispose();
+  }
+
+  void _onSearchChanged(String v) {
+    _searchDebounce?.cancel();
+    _searchDebounce = Timer(const Duration(milliseconds: 300), () {
+      if (mounted) setState(() => _searchQuery = v);
+    });
   }
 
   // ── Helpers ───────────────────────────────────────────────
@@ -105,13 +117,14 @@ class _AdminManualPaymentScreenState
     return AppUtils.getPeriodForDate(DateTime.now());
   }
 
-  String get _periodLabel {
+  String _periodLabelFor(BuildContext context) {
+    final localeCode = Localizations.localeOf(context).languageCode;
     if (_periodType == AppConstants.periodMonthly) {
-      final s = DateFormat('MMMM yyyy', 'fr_FR').format(_selectedMonth);
+      final s = DateFormat('MMMM yyyy', localeCode).format(_selectedMonth);
       return s[0].toUpperCase() + s.substring(1);
     }
     if (_periodType == AppConstants.periodAnnual) {
-      return 'Année ${_selectedMonth.year}';
+      return '${AppLocalizations.of(context).yearLabel} ${_selectedMonth.year}';
     }
     return AppUtils.formatDate(DateTime.now());
   }
@@ -334,7 +347,7 @@ class _AdminManualPaymentScreenState
                 borderSide: const BorderSide(color: AppColors.primary, width: 2),
               ),
             ),
-            onChanged: (v) => setState(() => _searchQuery = v),
+            onChanged: _onSearchChanged,
           ),
           if (_searchQuery.trim().length >= 2) ...[
             const SizedBox(height: AppConstants.spaceSM),
@@ -730,7 +743,7 @@ class _AdminManualPaymentScreenState
           ),
           Expanded(
             child: Text(
-              _periodLabel,
+              _periodLabelFor(context),
               textAlign: TextAlign.center,
               style: GoogleFonts.plusJakartaSans(
                 fontSize: 14,

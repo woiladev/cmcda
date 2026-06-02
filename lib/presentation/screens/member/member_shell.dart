@@ -1,4 +1,4 @@
-﻿import 'package:flutter/material.dart';
+import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import 'package:google_fonts/google_fonts.dart';
@@ -18,10 +18,8 @@ class MemberShell extends ConsumerWidget {
     final l = AppLocalizations.of(context);
     final isViewingAsMember = ref.watch(viewingAsMemberProvider);
     final user = ref.watch(currentUserProfileProvider).valueOrNull;
-    final isFocalViewing =
-        isViewingAsMember && (user?.isFocal ?? false);
-    final isAdminViewing =
-        isViewingAsMember && (user?.hasAdminAccess ?? false);
+    final isFocalViewing = isViewingAsMember && (user?.isFocal ?? false);
+    final isAdminViewing = isViewingAsMember && (user?.hasAdminAccess ?? false);
     final showBanner = isFocalViewing || isAdminViewing;
 
     return Scaffold(
@@ -29,8 +27,8 @@ class MemberShell extends ConsumerWidget {
         children: [
           if (isFocalViewing)
             _AdminViewBanner(
-              label: 'Mode Membre · Espace personnel',
-              returnLabel: 'Focal',
+              label: '${l.member} · ${l.profile}',
+              returnLabel: l.focal,
               onReturn: () {
                 ref.read(viewingAsMemberProvider.notifier).state = false;
                 context.go(AppRoutes.focal);
@@ -38,8 +36,8 @@ class MemberShell extends ConsumerWidget {
             )
           else if (isAdminViewing)
             _AdminViewBanner(
-              label: 'Mode Membre · Vue de contribution',
-              returnLabel: 'Admin',
+              label: '${l.member} · ${l.viewAsMember}',
+              returnLabel: l.adminBadge,
               onReturn: () {
                 ref.read(viewingAsMemberProvider.notifier).state = false;
                 context.go(AppRoutes.admin);
@@ -62,7 +60,9 @@ class MemberShell extends ConsumerWidget {
           // Re-entering the Pay tab from another tab — signal PaymentScreen
           // to discard any lingering success state.
           if (index == 1 && navigationShell.currentIndex != 1) {
-            ref.read(paymentTabActivationProvider.notifier).update((n) => n + 1);
+            ref
+                .read(paymentTabActivationProvider.notifier)
+                .update((n) => n + 1);
           }
           navigationShell.goBranch(
             index,
@@ -125,9 +125,9 @@ class _AdminViewBanner extends StatelessWidget {
                 ),
                 decoration: BoxDecoration(
                   color: Colors.white.withValues(alpha: 0.15),
-                  borderRadius:
-                      BorderRadius.circular(AppConstants.radiusFull),
-                  border: Border.all(color: Colors.white.withValues(alpha: 0.3)),
+                  borderRadius: BorderRadius.circular(AppConstants.radiusFull),
+                  border:
+                      Border.all(color: Colors.white.withValues(alpha: 0.3)),
                 ),
                 child: Row(
                   mainAxisSize: MainAxisSize.min,
@@ -170,7 +170,8 @@ class _MemberNavBar extends StatelessWidget {
     return Container(
       decoration: BoxDecoration(
         color: AppColors.surface,
-        border: const Border(top: BorderSide(color: AppColors.border, width: 1)),
+        border:
+            const Border(top: BorderSide(color: AppColors.border, width: 1)),
         boxShadow: [
           BoxShadow(
             color: AppColors.textDark.withValues(alpha: 0.06),
@@ -184,7 +185,7 @@ class _MemberNavBar extends StatelessWidget {
         child: Padding(
           padding: const EdgeInsets.symmetric(
             vertical: AppConstants.spaceMD,
-            horizontal: AppConstants.spaceLG,
+            horizontal: AppConstants.spaceMD,
           ),
           child: Row(
             mainAxisAlignment: MainAxisAlignment.spaceAround,
@@ -197,21 +198,27 @@ class _MemberNavBar extends StatelessWidget {
               ),
               _NavItem(
                 icon: Icons.volunteer_activism_rounded,
-                label: 'Contribuer',
+                label: l.contribute,
                 selected: selectedIndex == 1,
                 onTap: () => onTabSelected(1),
               ),
               _NavItem(
-                icon: Icons.notifications_outlined,
-                label: l.alerts,
+                icon: Icons.event_rounded,
+                label: l.events,
                 selected: selectedIndex == 2,
                 onTap: () => onTabSelected(2),
               ),
               _NavItem(
-                icon: Icons.person_outline_rounded,
-                label: l.profile,
+                icon: Icons.notifications_outlined,
+                label: l.alerts,
                 selected: selectedIndex == 3,
                 onTap: () => onTabSelected(3),
+              ),
+              _NavItem(
+                icon: Icons.person_outline_rounded,
+                label: l.profile,
+                selected: selectedIndex == 4,
+                onTap: () => onTabSelected(4),
               ),
             ],
           ),

@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
 
 import '../../../core/constants/app_constants.dart';
+import '../../../core/l10n/app_localizations.dart';
 import '../../../core/theme/app_theme.dart';
 import '../../../data/models/notification_model.dart';
 
@@ -13,10 +14,10 @@ enum _Target {
   focal,
   admins;
 
-  String get label => switch (this) {
-        activeMembers => 'Membres actifs',
-        focal => 'Agents focaux',
-        admins => 'Administrateurs',
+  String label(AppLocalizations l) => switch (this) {
+        activeMembers => l.targetActiveMembers,
+        focal => l.targetFocal,
+        admins => l.targetAdmins,
       };
 
   String get icon => switch (this) {
@@ -95,13 +96,14 @@ class _SendNotificationSheetState extends State<_SendNotificationSheet> {
 
   Future<void> _send() async {
     if (!_formKey.currentState!.validate()) return;
+    final l = AppLocalizations.of(context);
     setState(() => _sending = true);
 
     try {
       final userIds = await _fetchTargetUserIds();
 
       if (userIds.isEmpty) {
-        _showSnack('Aucun destinataire trouvé pour cette cible.', isError: true);
+        _showSnack(l.noRecipientsFound, isError: true);
         return;
       }
 
@@ -133,12 +135,10 @@ class _SendNotificationSheetState extends State<_SendNotificationSheet> {
 
       if (mounted) {
         Navigator.pop(context);
-        _showSnack(
-          '${userIds.length} notification${userIds.length > 1 ? 's' : ''} envoyée${userIds.length > 1 ? 's' : ''}.',
-        );
+        _showSnack(l.notificationsSent(userIds.length));
       }
-    } catch (e) {
-      _showSnack('Erreur lors de l\'envoi. Réessayez.', isError: true);
+    } catch (_) {
+      if (mounted) _showSnack(l.sendError, isError: true);
     } finally {
       if (mounted) setState(() => _sending = false);
     }
@@ -158,6 +158,7 @@ class _SendNotificationSheetState extends State<_SendNotificationSheet> {
 
   @override
   Widget build(BuildContext context) {
+    final l = AppLocalizations.of(context);
     final bottomInset = MediaQuery.of(context).viewInsets.bottom;
 
     return Container(
@@ -209,7 +210,7 @@ class _SendNotificationSheetState extends State<_SendNotificationSheet> {
                   ),
                   const SizedBox(width: AppConstants.spaceMD),
                   Text(
-                    'Envoyer une notification',
+                    l.sendNotificationTitle,
                     style: GoogleFonts.playfairDisplay(
                       fontSize: 18,
                       fontWeight: FontWeight.w700,
@@ -221,7 +222,7 @@ class _SendNotificationSheetState extends State<_SendNotificationSheet> {
               const SizedBox(height: AppConstants.spaceLG),
 
               // Target section
-              const _SectionLabel('DESTINATAIRES'),
+              _SectionLabel(l.recipientsLabel),
               const SizedBox(height: AppConstants.spaceSM),
               Wrap(
                 spacing: AppConstants.spaceSM,
@@ -254,7 +255,7 @@ class _SendNotificationSheetState extends State<_SendNotificationSheet> {
                               style: const TextStyle(fontSize: 14)),
                           const SizedBox(width: 6),
                           Text(
-                            t.label,
+                            t.label(l),
                             style: GoogleFonts.plusJakartaSans(
                               fontSize: 12,
                               fontWeight: selected
@@ -274,22 +275,22 @@ class _SendNotificationSheetState extends State<_SendNotificationSheet> {
               const SizedBox(height: AppConstants.spaceLG),
 
               // Title field
-              const _SectionLabel('TITRE'),
+              _SectionLabel(l.titleLabel),
               const SizedBox(height: AppConstants.spaceSM),
               TextFormField(
                 controller: _titleCtrl,
                 maxLength: 80,
                 style: GoogleFonts.plusJakartaSans(
                     fontSize: 14, color: AppColors.textDark),
-                decoration: _inputDeco('Ex: Rappel de contribution — Mai 2025'),
+                decoration: _inputDeco(l.titlePlaceholder),
                 validator: (v) => (v == null || v.trim().isEmpty)
-                    ? 'Le titre est requis'
+                    ? l.titleRequired
                     : null,
               ),
               const SizedBox(height: AppConstants.spaceMD),
 
               // Message field
-              const _SectionLabel('MESSAGE'),
+              _SectionLabel(l.messageLabel),
               const SizedBox(height: AppConstants.spaceSM),
               TextFormField(
                 controller: _messageCtrl,
@@ -297,10 +298,9 @@ class _SendNotificationSheetState extends State<_SendNotificationSheet> {
                 maxLines: 4,
                 style: GoogleFonts.plusJakartaSans(
                     fontSize: 14, color: AppColors.textDark),
-                decoration: _inputDeco(
-                    'Ex: Chers membres, votre contribution du mois de mai est attendue avant le 31...'),
+                decoration: _inputDeco(l.messagePlaceholder),
                 validator: (v) => (v == null || v.trim().isEmpty)
-                    ? 'Le message est requis'
+                    ? l.messageRequired
                     : null,
               ),
               const SizedBox(height: AppConstants.spaceLG),
@@ -328,7 +328,7 @@ class _SendNotificationSheetState extends State<_SendNotificationSheet> {
                               strokeWidth: 2, color: Colors.white))
                       : const Icon(Icons.send_rounded, size: 18),
                   label: Text(
-                    _sending ? 'Envoi en cours…' : 'Envoyer',
+                    _sending ? l.sendingInProgress : l.sendBtn,
                     style: GoogleFonts.plusJakartaSans(
                       fontSize: 15,
                       fontWeight: FontWeight.w700,

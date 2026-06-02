@@ -203,15 +203,11 @@ class _OnboardingScreenState extends State<OnboardingScreen>
                         ),
                       ],
                     ),
-                    child: Center(
-                      child: Text(
-                        AppConstants.acronym,
-                        style: GoogleFonts.playfairDisplay(
-                          fontSize: 17,
-                          fontWeight: FontWeight.w800,
-                          color: AppColors.primary,
-                          letterSpacing: 1.5,
-                        ),
+                    child: Padding(
+                      padding: const EdgeInsets.all(4),
+                      child: Image.asset(
+                        'assets/images/cmcda_logo.png',
+                        fit: BoxFit.contain,
                       ),
                     ),
                   ),

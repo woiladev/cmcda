@@ -18,6 +18,11 @@ class ContributionModel {
   final String? paidForId;    // member ID if paying on behalf of another
   final String? focalReportId;
   final String? notes;
+  final String? proofUrl; // proof-of-transfer image (bank transfers)
+  final String? depositId; // pawaPay deposit id (mobile money via gateway)
+  final String? pawaPayStatus; // last raw pawaPay status (ACCEPTED/COMPLETED/…)
+  final String? pawaPayProvider; // MTN_MOMO_CMR / ORANGE_CMR
+  final String? payerPhone; // MSISDN used for the deposit
   final bool validationRequired; // cash/bank always require validation
   final Timestamp createdAt;
   final Timestamp? confirmedAt;
@@ -39,6 +44,11 @@ class ContributionModel {
     this.paidForId,
     this.focalReportId,
     this.notes,
+    this.proofUrl,
+    this.depositId,
+    this.pawaPayStatus,
+    this.pawaPayProvider,
+    this.payerPhone,
     required this.validationRequired,
     required this.createdAt,
     this.confirmedAt,
@@ -63,6 +73,11 @@ class ContributionModel {
       paidForId: d['paidForId'] as String?,
       focalReportId: d['focalReportId'] as String?,
       notes: d['notes'] as String?,
+      proofUrl: d['proofUrl'] as String?,
+      depositId: d['depositId'] as String?,
+      pawaPayStatus: d['pawaPayStatus'] as String?,
+      pawaPayProvider: d['pawaPayProvider'] as String?,
+      payerPhone: d['payerPhone'] as String?,
       validationRequired: d['validationRequired'] as bool? ?? false,
       createdAt: d['createdAt'] as Timestamp? ?? Timestamp.now(),
       confirmedAt: d['confirmedAt'] as Timestamp?,
@@ -86,6 +101,11 @@ class ContributionModel {
       if (paidForId != null) 'paidForId': paidForId,
       if (focalReportId != null) 'focalReportId': focalReportId,
       if (notes != null) 'notes': notes,
+      if (proofUrl != null) 'proofUrl': proofUrl,
+      if (depositId != null) 'depositId': depositId,
+      if (pawaPayStatus != null) 'pawaPayStatus': pawaPayStatus,
+      if (pawaPayProvider != null) 'pawaPayProvider': pawaPayProvider,
+      if (payerPhone != null) 'payerPhone': payerPhone,
       'validationRequired': validationRequired,
       'createdAt': createdAt,
       if (confirmedAt != null) 'confirmedAt': confirmedAt,
@@ -98,6 +118,7 @@ class ContributionModel {
     String? secondValidatorId,
     String? focalReportId,
     String? notes,
+    String? proofUrl,
     Timestamp? confirmedAt,
   }) {
     return ContributionModel(
@@ -117,6 +138,11 @@ class ContributionModel {
       paidForId: paidForId,
       focalReportId: focalReportId ?? this.focalReportId,
       notes: notes ?? this.notes,
+      proofUrl: proofUrl ?? this.proofUrl,
+      depositId: depositId,
+      pawaPayStatus: pawaPayStatus,
+      pawaPayProvider: pawaPayProvider,
+      payerPhone: payerPhone,
       validationRequired: validationRequired,
       createdAt: createdAt,
       confirmedAt: confirmedAt ?? this.confirmedAt,
@@ -130,6 +156,9 @@ class ContributionModel {
   bool get isFailed => status == AppConstants.statusFailed;
   bool get isCash => paymentMethod == AppConstants.paymentCash;
   bool get isBankTransfer => paymentMethod == AppConstants.paymentBankTransfer;
+  bool get isMobileMoney =>
+      paymentMethod == AppConstants.paymentMtnMomo ||
+      paymentMethod == AppConstants.paymentOrangeMoney;
   bool get isManual => isCash || isBankTransfer;
   bool get needsSecondValidation => validatedBy != null && secondValidatorId == null && validationRequired;
 }

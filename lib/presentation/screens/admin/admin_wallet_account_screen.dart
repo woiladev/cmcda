@@ -10,6 +10,7 @@ import 'package:intl/intl.dart';
 
 import '../../../core/constants/app_constants.dart';
 import '../../../core/l10n/app_localizations.dart';
+import '../../../core/services/router_service.dart';
 import '../../../core/theme/app_theme.dart';
 import '../../../data/models/wallet_account_model.dart';
 import '../../../data/models/wallet_transaction_model.dart';
@@ -462,6 +463,9 @@ class _AdminWalletAccountScreenState
 
   Widget _buildColoredHeader(
       BuildContext context, WalletAccountModel account, AppLocalizations l) {
+    final isSuperAdmin =
+        ref.watch(currentUserProfileProvider).valueOrNull?.isSuperAdmin ??
+            false;
     final baseColor = account.accentColor;
     // Darken for gradient end
     final darkColor = Color.fromARGB(
@@ -499,14 +503,15 @@ class _AdminWalletAccountScreenState
                 constraints: const BoxConstraints(),
               ),
               const Spacer(),
-              IconButton(
-                onPressed: () => _showArchiveDialog(account),
-                tooltip: l.archiveAccount,
-                icon: const Icon(Icons.archive_outlined,
-                    color: Colors.white, size: 22),
-                padding: EdgeInsets.zero,
-                constraints: const BoxConstraints(),
-              ),
+              if (isSuperAdmin)
+                IconButton(
+                  onPressed: () => _showArchiveDialog(account),
+                  tooltip: l.archiveAccount,
+                  icon: const Icon(Icons.archive_outlined,
+                      color: Colors.white, size: 22),
+                  padding: EdgeInsets.zero,
+                  constraints: const BoxConstraints(),
+                ),
             ],
           ),
           const SizedBox(height: AppConstants.spaceSM),
@@ -590,38 +595,39 @@ class _AdminWalletAccountScreenState
           ),
           const SizedBox(height: AppConstants.spaceLG),
 
-          // Action buttons row
-          Row(
-            children: [
-              _HeaderActionButton(
-                icon: Icons.add_circle_outline_rounded,
-                label: l.addMovement,
-                onTap: () => _showTransactionDialog(),
-              ),
-              const SizedBox(width: AppConstants.spaceSM),
-              _HeaderActionButton(
-                icon: Icons.swap_horiz_rounded,
-                label: l.transferTitle,
-                onTap: () {
-                  final acc = ref
-                      .read(_accountDetailProvider(widget.accountId))
-                      .valueOrNull;
-                  if (acc != null) _showTransferDialog(acc);
-                },
-              ),
-              const SizedBox(width: AppConstants.spaceSM),
-              _HeaderActionButton(
-                icon: Icons.archive_outlined,
-                label: l.archiveAccount,
-                onTap: () {
-                  final acc = ref
-                      .read(_accountDetailProvider(widget.accountId))
-                      .valueOrNull;
-                  if (acc != null) _showArchiveDialog(acc);
-                },
-              ),
-            ],
-          ),
+          // Action buttons row — super_admin only (view-only for admins)
+          if (isSuperAdmin)
+            Row(
+              children: [
+                _HeaderActionButton(
+                  icon: Icons.add_circle_outline_rounded,
+                  label: l.addMovement,
+                  onTap: () => _showTransactionDialog(),
+                ),
+                const SizedBox(width: AppConstants.spaceSM),
+                _HeaderActionButton(
+                  icon: Icons.swap_horiz_rounded,
+                  label: l.transferTitle,
+                  onTap: () {
+                    final acc = ref
+                        .read(_accountDetailProvider(widget.accountId))
+                        .valueOrNull;
+                    if (acc != null) _showTransferDialog(acc);
+                  },
+                ),
+                const SizedBox(width: AppConstants.spaceSM),
+                _HeaderActionButton(
+                  icon: Icons.archive_outlined,
+                  label: l.archiveAccount,
+                  onTap: () {
+                    final acc = ref
+                        .read(_accountDetailProvider(widget.accountId))
+                        .valueOrNull;
+                    if (acc != null) _showArchiveDialog(acc);
+                  },
+                ),
+              ],
+            ),
         ],
       ),
     );
@@ -891,6 +897,9 @@ class _AdminWalletAccountScreenState
 
   Widget _buildTransactionItem(BuildContext context,
       WalletTransactionModel tx, AppLocalizations l) {
+    final isSuperAdmin =
+        ref.watch(currentUserProfileProvider).valueOrNull?.isSuperAdmin ??
+            false;
     final kindColor = _kindColor(tx.kind);
     final signed = tx.signedAmount;
     final amountColor = signed >= 0 ? AppColors.success : AppColors.error;
@@ -898,7 +907,8 @@ class _AdminWalletAccountScreenState
     final dateStr = DateFormat('dd MMM', 'fr_FR').format(tx.occurredAt.toDate());
 
     return GestureDetector(
-      onLongPress: () => _showTxOptions(context, tx, l),
+      onLongPress:
+          isSuperAdmin ? () => _showTxOptions(context, tx, l) : null,
       child: Container(
         margin: const EdgeInsets.only(bottom: AppConstants.spaceSM),
         padding: const EdgeInsets.symmetric(
@@ -992,6 +1002,7 @@ class _AdminWalletAccountScreenState
                   ),
                 ),
                 const SizedBox(height: 4),
+                if (isSuperAdmin)
                 GestureDetector(
                   onTap: () => _showTxOptions(context, tx, l),
                   child: const Icon(Icons.more_vert_rounded,

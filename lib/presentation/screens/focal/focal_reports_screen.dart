@@ -387,7 +387,7 @@ class _ReportTile extends StatelessWidget {
   Widget build(BuildContext context) {
     final l = AppLocalizations.of(context);
     final r = report;
-    final (statusColor, statusLabel, statusIcon) = _statusInfo(r.status);
+    final (statusColor, statusLabel, statusIcon) = _statusInfo(r.status, l);
 
     return GestureDetector(
       onTap: onTap,
@@ -1002,15 +1002,15 @@ class _EmptyState extends StatelessWidget {
 
 // ── Status helper ─────────────────────────────────────────────
 
-(Color, String, IconData) _statusInfo(String status) {
+(Color, String, IconData) _statusInfo(String status, AppLocalizations l) {
   switch (status) {
     case FocalReportModel.statusSubmitted:
-      return (AppColors.info, 'Soumis', Icons.hourglass_top_rounded);
+      return (AppColors.info, l.submittedStatus, Icons.hourglass_top_rounded);
     case FocalReportModel.statusValidated:
-      return (AppColors.success, 'Validé', Icons.check_circle_rounded);
+      return (AppColors.success, l.validatedStatus, Icons.check_circle_rounded);
     case FocalReportModel.statusRejected:
-      return (AppColors.error, 'Rejeté', Icons.cancel_rounded);
+      return (AppColors.error, l.rejectedStatus, Icons.cancel_rounded);
     default:
-      return (AppColors.warning, 'Brouillon', Icons.edit_note_rounded);
+      return (AppColors.warning, l.draftStatus, Icons.edit_note_rounded);
   }
 }

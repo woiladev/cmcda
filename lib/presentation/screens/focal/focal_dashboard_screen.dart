@@ -19,6 +19,7 @@ import '../../../data/repositories/auth_repository.dart';
 import '../../../data/repositories/contribution_repository.dart';
 import '../../../data/repositories/focal_report_repository.dart';
 import 'focal_providers.dart';
+import 'focal_pawapay_sheet.dart';
 
 // ── Colors ────────────────────────────────────────────────────
 
@@ -475,6 +476,8 @@ class _FocalDashboardScreenState extends ConsumerState<FocalDashboardScreen> {
               ],
             ),
           ),
+          const SizedBox(height: AppConstants.spaceMD),
+          _TodayStrip(focalId: user.id, l: l),
         ],
       ),
     );
@@ -1442,12 +1445,19 @@ class _GlassStat extends StatelessWidget {
           mainAxisAlignment: MainAxisAlignment.center,
           crossAxisAlignment: CrossAxisAlignment.end,
           children: [
-            Text(
-              value,
-              style: GoogleFonts.plusJakartaSans(
-                fontSize: 18,
-                fontWeight: FontWeight.w800,
-                color: Colors.white,
+            Flexible(
+              child: FittedBox(
+                fit: BoxFit.scaleDown,
+                alignment: Alignment.centerRight,
+                child: Text(
+                  value,
+                  maxLines: 1,
+                  style: GoogleFonts.plusJakartaSans(
+                    fontSize: 18,
+                    fontWeight: FontWeight.w800,
+                    color: Colors.white,
+                  ),
+                ),
               ),
             ),
             if (suffix != null) ...[
@@ -1491,6 +1501,59 @@ class _VerticalDivider extends StatelessWidget {
       color: Colors.white.withValues(alpha: 0.2),
       margin: const EdgeInsets.symmetric(
           horizontal: AppConstants.spaceSM),
+    );
+  }
+}
+
+class _TodayStrip extends ConsumerWidget {
+  final String focalId;
+  final AppLocalizations l;
+  const _TodayStrip({required this.focalId, required this.l});
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final today = ref.watch(focalTodayContribProvider(focalId)).valueOrNull;
+    final todayMembers =
+        ref.watch(focalTodayMembersProvider(focalId)).valueOrNull ?? 0;
+    final amount = today?.$1 ?? 0;
+    final count = today?.$2 ?? 0;
+
+    return Container(
+      padding: const EdgeInsets.symmetric(
+        horizontal: AppConstants.spaceMD,
+        vertical: AppConstants.spaceSM + 2,
+      ),
+      decoration: BoxDecoration(
+        color: Colors.white.withValues(alpha: 0.08),
+        borderRadius: BorderRadius.circular(AppConstants.radiusFull),
+        border: Border.all(color: Colors.white.withValues(alpha: 0.15)),
+      ),
+      child: Row(
+        children: [
+          Icon(Icons.today_rounded,
+              size: 16, color: Colors.white.withValues(alpha: 0.85)),
+          const SizedBox(width: AppConstants.spaceSM),
+          Text(
+            '${l.todayCollected} · ',
+            style: GoogleFonts.plusJakartaSans(
+              fontSize: 11,
+              fontWeight: FontWeight.w600,
+              color: Colors.white.withValues(alpha: 0.7),
+            ),
+          ),
+          Expanded(
+            child: Text(
+              '${AppUtils.formatAmount(amount)} · $count ${l.todayContribCount.toLowerCase()} · $todayMembers ${l.todayNewMembers.toLowerCase()}',
+              style: GoogleFonts.plusJakartaSans(
+                fontSize: 12,
+                fontWeight: FontWeight.w700,
+                color: Colors.white,
+              ),
+              overflow: TextOverflow.ellipsis,
+            ),
+          ),
+        ],
+      ),
     );
   }
 }
@@ -2532,8 +2595,50 @@ class _FocalQuickPaymentSheetState
   bool get _canSubmit =>
       _selectedMember != null && _amount > 0 && !_submitting;
 
+  bool get _isMomo =>
+      _paymentMethod == AppConstants.paymentMtnMomo ||
+      _paymentMethod == AppConstants.paymentOrangeMoney;
+
   Future<void> _submit() async {
     if (!_canSubmit) return;
+    if (_isMomo) {
+      await _startMomoCharge();
+    } else {
+      await _recordCash();
+    }
+  }
+
+  // Mobile money: trigger a real pawaPay PIN prompt on the member's phone. The
+  // deposit is initiated server-side; this sheet only closes once it confirms.
+  Future<void> _startMomoCharge() async {
+    final nav = Navigator.of(context);
+    final messenger = ScaffoldMessenger.of(context);
+    final confirmed = await showModalBottomSheet<bool>(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      builder: (_) => Center(
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 520),
+          child: FocalPawaPaySheet(
+            member: _selectedMember!,
+            amount: _amount,
+            periodType: _periodType,
+            isMtn: _paymentMethod == AppConstants.paymentMtnMomo,
+          ),
+        ),
+      ),
+    );
+    if (confirmed == true && mounted) {
+      nav.pop();
+      messenger.showSnackBar(const SnackBar(
+        content: Text('Paiement enregistré avec succès'),
+        backgroundColor: AppColors.success,
+      ));
+    }
+  }
+
+  Future<void> _recordCash() async {
     setState(() => _submitting = true);
     final nav = Navigator.of(context);
     final messenger = ScaffoldMessenger.of(context);

@@ -381,6 +381,8 @@ class _ReceiptCard extends StatelessWidget {
                           children: [
                             Text(
                               _periodLabel(c.period),
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
                               style: GoogleFonts.plusJakartaSans(
                                 fontSize: 13,
                                 fontWeight: FontWeight.w700,
@@ -390,6 +392,8 @@ class _ReceiptCard extends StatelessWidget {
                             const SizedBox(height: 2),
                             Text(
                               '$date · $methodLabel',
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
                               style: GoogleFonts.plusJakartaSans(
                                 fontSize: 11,
                                 color: AppColors.textGray,

@@ -6,6 +6,7 @@ import 'package:google_fonts/google_fonts.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 import '../../../core/constants/app_constants.dart';
+import '../../../core/l10n/app_localizations.dart';
 import '../../../core/services/notification_service.dart';
 import '../../../core/services/router_service.dart';
 import '../../../core/theme/app_theme.dart';
@@ -103,8 +104,6 @@ class _FocalReportDetailScreenState
   }
 
   Future<void> _validate(FocalReportModel report) async {
-    final adminId =
-        ref.read(currentUserProfileProvider).valueOrNull?.id ?? '';
     final ok = await showDialog<bool>(
       context: context,
       builder: (ctx) => AlertDialog(
@@ -112,7 +111,9 @@ class _FocalReportDetailScreenState
             style: GoogleFonts.plusJakartaSans(
                 fontWeight: FontWeight.w700, color: AppColors.textDark)),
         content: Text(
-          'Le rapport de ${report.focalName} sera marqué comme validé.',
+          'Cela confirmera ${report.membersServed} paiement(s) en espèces '
+          '(${AppUtils.formatAmount(report.totalCollected)}) et créditera les '
+          'caisses.',
           style: GoogleFonts.plusJakartaSans(
               color: AppColors.textGray, fontSize: 13),
         ),
@@ -133,11 +134,20 @@ class _FocalReportDetailScreenState
     if (ok != true || !mounted) return;
     setState(() => _actioning = true);
     try {
-      await _repo.validateReport(report.id, adminId);
+      final res = await _repo.validateReport(report.id);
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: Text(
+              '${res.confirmed} paiement(s) confirmé(s) '
+              '(${AppUtils.formatAmount(res.total)})'),
+          backgroundColor: AppColors.success,
+        ));
+      }
+    } catch (_) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
-          content: Text('Rapport validé'),
-          backgroundColor: AppColors.success,
+          content: Text('Erreur'),
+          backgroundColor: AppColors.error,
         ));
       }
     } finally {
@@ -146,8 +156,6 @@ class _FocalReportDetailScreenState
   }
 
   Future<void> _reject(FocalReportModel report) async {
-    final adminId =
-        ref.read(currentUserProfileProvider).valueOrNull?.id ?? '';
     final reasonCtrl = TextEditingController();
     final ok = await showDialog<bool>(
       context: context,
@@ -191,14 +199,25 @@ class _FocalReportDetailScreenState
         ],
       ),
     );
-    if (ok != true || !mounted) return;
+    if (ok != true || !mounted) {
+      reasonCtrl.dispose();
+      return;
+    }
     setState(() => _actioning = true);
     try {
-      await _repo.rejectReport(report.id, adminId, reasonCtrl.text.trim());
+      await _repo.rejectReport(report.id, reasonCtrl.text.trim());
       reasonCtrl.dispose();
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
           content: Text('Rapport rejeté'),
+          backgroundColor: AppColors.error,
+        ));
+      }
+    } catch (_) {
+      reasonCtrl.dispose();
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+          content: Text('Erreur'),
           backgroundColor: AppColors.error,
         ));
       }
@@ -259,9 +278,10 @@ class _FocalReportDetailScreenState
 
   Widget _buildContent(
       BuildContext context, FocalReportModel report, bool isAdmin) {
+    final l = AppLocalizations.of(context);
     final contribAsync =
         ref.watch(_reportContributionsProvider(widget.reportId));
-    final (statusColor, statusLabel) = _statusInfo(report.status);
+    final (statusColor, statusLabel) = _statusInfo(report.status, l);
     final date = report.reportDate.toDate();
 
     return Column(
@@ -603,8 +623,12 @@ class _FocalReportDetailScreenState
       );
     }
 
-    // Admin: validate/reject if submitted
-    if (isAdmin && report.isSubmitted) {
+    // Super admin only: validate/reject if submitted (accepting confirms the
+    // session's cash and credits the wallets).
+    final isSuperAdmin =
+        ref.read(currentUserProfileProvider).valueOrNull?.isSuperAdmin ??
+            false;
+    if (isSuperAdmin && report.isSubmitted) {
       buttons.add(
         OutlinedButton.icon(
           onPressed: () => _reject(report),
@@ -717,6 +741,7 @@ class _ContribRow extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final l = AppLocalizations.of(context);
     final c = contribution;
     final statusColor = c.status == AppConstants.statusConfirmed
         ? AppColors.success
@@ -762,7 +787,7 @@ class _ContribRow extends StatelessWidget {
                   ),
                 ),
                 Text(
-                  '${c.memberNumber} · ${AppUtils.paymentMethodLabel(c.paymentMethod)}',
+                  '${c.memberNumber} · ${l.paymentMethodName(c.paymentMethod)}',
                   style: const TextStyle(
                       fontSize: 11, color: AppColors.textGray),
                 ),
@@ -789,7 +814,7 @@ class _ContribRow extends StatelessWidget {
                       BorderRadius.circular(AppConstants.radiusFull),
                 ),
                 child: Text(
-                  AppUtils.statusLabel(c.status),
+                  l.statusName(c.status),
                   style: TextStyle(
                       fontSize: 9,
                       fontWeight: FontWeight.w700,
@@ -806,11 +831,11 @@ class _ContribRow extends StatelessWidget {
 
 // ── Status helper ─────────────────────────────────────────────
 
-(Color, String) _statusInfo(String status) {
+(Color, String) _statusInfo(String status, AppLocalizations l) {
   return switch (status) {
-    FocalReportModel.statusSubmitted => (AppColors.warning, 'En attente'),
-    FocalReportModel.statusValidated => (AppColors.success, 'Validé'),
-    FocalReportModel.statusRejected => (AppColors.error, 'Rejeté'),
-    _ => (AppColors.textGray, 'Brouillon'),
+    FocalReportModel.statusSubmitted => (AppColors.warning, l.pending),
+    FocalReportModel.statusValidated => (AppColors.success, l.validatedStatus),
+    FocalReportModel.statusRejected => (AppColors.error, l.rejectedStatus),
+    _ => (AppColors.textGray, l.draftStatus),
   };
 }

@@ -327,6 +327,7 @@ class _NotificationsScreenState extends ConsumerState<NotificationsScreen> {
       case _NotifFilter.payments:
         const types = [
           NotificationModel.typePaymentConfirmed,
+          NotificationModel.typePaymentRejected,
           NotificationModel.typePaymentReminder,
           NotificationModel.typeManualPayment,
         ];
@@ -340,6 +341,7 @@ class _NotificationsScreenState extends ConsumerState<NotificationsScreen> {
           NotificationModel.typeWelcome,
           NotificationModel.typeMilestone,
           NotificationModel.typeFocalReport,
+          NotificationModel.typeRoleChange,
         ];
         return all.where((n) => types.contains(n.type)).toList();
     }
@@ -554,11 +556,23 @@ class _NotificationItem extends StatelessWidget {
           AppColors.success.withValues(alpha: 0.15),
           AppColors.success,
         );
+      case NotificationModel.typePaymentRejected:
+        return (
+          Icons.cancel_rounded,
+          AppColors.error.withValues(alpha: 0.15),
+          AppColors.error,
+        );
       case NotificationModel.typePaymentReminder:
         return (
           Icons.alarm_rounded,
           AppColors.warning.withValues(alpha: 0.15),
           AppColors.warning,
+        );
+      case NotificationModel.typeRoleChange:
+        return (
+          Icons.badge_rounded,
+          AppColors.info.withValues(alpha: 0.15),
+          AppColors.info,
         );
       case NotificationModel.typeWelcome:
       case NotificationModel.typeMilestone:

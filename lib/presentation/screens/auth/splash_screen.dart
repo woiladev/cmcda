@@ -23,9 +23,6 @@ class _SplashScreenState extends ConsumerState<SplashScreen>
   late final Animation<double> _fadeAnim;
   late final Animation<double> _scaleAnim;
   bool _navigationScheduled = false;
-  // Set after 1.5s — lets the profile listener trigger early navigation
-  // only once the animation has finished, avoiding flashes.
-  bool _minTimePassed = false;
 
   @override
   void initState() {
@@ -45,7 +42,6 @@ class _SplashScreenState extends ConsumerState<SplashScreen>
     // Allow early navigation once animation is done (logged-in fast path only).
     Future.delayed(const Duration(milliseconds: 1500), () {
       if (!mounted) return;
-      _minTimePassed = true;
       _tryEarlyNavigate();
     });
 
@@ -61,8 +57,15 @@ class _SplashScreenState extends ConsumerState<SplashScreen>
     final auth = ref.read(authStateProvider);
     final user = auth.valueOrNull;
     if (user == null) return; // not ready or not logged in — let 3 s timer decide
-    final profile = ref.read(currentUserProfileProvider).valueOrNull;
-    if (profile == null) return; // profile not ready yet
+    final profileAsync = ref.read(currentUserProfileProvider);
+    if (profileAsync.isLoading) return; // still fetching from Firestore
+    final profile = profileAsync.valueOrNull;
+    if (profile == null) {
+      // Logged in but no Firestore doc yet — needs profile completion
+      _navigationScheduled = true;
+      context.go(AppRoutes.completeProfile);
+      return;
+    }
     _navigationScheduled = true;
     _goByRole(profile.role);
   }
@@ -86,12 +89,15 @@ class _SplashScreenState extends ConsumerState<SplashScreen>
 
     final profile = profileAsync.valueOrNull;
     if (profile == null) {
-      // Profile still loading — wait a bit more then fall back to login.
+      // Profile still loading — wait a bit more.
       Future.delayed(const Duration(seconds: 2), () {
         if (!mounted) return;
-        final p = ref.read(currentUserProfileProvider).valueOrNull;
+        final pa = ref.read(currentUserProfileProvider);
+        final p = pa.valueOrNull;
         if (p == null) {
-          context.go(AppRoutes.login);
+          // Still no profile: either Firestore is slow or doc truly doesn't exist.
+          // Route to complete-profile; the router redirect will handle any edge case.
+          context.go(AppRoutes.completeProfile);
           return;
         }
         _goByRole(p.role);
@@ -199,15 +205,11 @@ class _SplashContent extends StatelessWidget {
                 ),
               ],
             ),
-            child: Center(
-              child: Text(
-                AppConstants.acronym,
-                style: Theme.of(context).textTheme.headlineSmall?.copyWith(
-                      color: AppColors.primary,
-                      fontWeight: FontWeight.bold,
-                      fontSize: 24,
-                      letterSpacing: 2,
-                    ),
+            child: Padding(
+              padding: const EdgeInsets.all(4),
+              child: Image.asset(
+                'assets/images/cmcda_logo.png',
+                fit: BoxFit.contain,
               ),
             ),
           ),

@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import '../constants/app_constants.dart';
 import 'translations/fr.dart';
 import 'translations/en.dart';
 import 'translations/ar.dart';
@@ -64,6 +65,8 @@ class AppLocalizations {
   String get step2of3 => _t('step2of3');
   String get step3of3 => _t('step3of3');
   String get createMyAccount => _t('createMyAccount');
+  String get completeProfileTitle => _t('completeProfileTitle');
+  String get completeProfileSubtitle => _t('completeProfileSubtitle');
   String get preferredFrequency => _t('preferredFrequency');
   String get preferredPayment => _t('preferredPayment');
   String get chooseLanguage => _t('chooseLanguage');
@@ -114,6 +117,16 @@ class AppLocalizations {
   String get languageDisplay => _t('languageDisplay');
   String get saveChanges => _t('saveChanges');
   String get memberSinceLabel => _t('memberSinceLabel');
+  String get reminders => _t('reminders');
+  String get remindersSubtitle => _t('remindersSubtitle');
+  String get enableReminders => _t('enableReminders');
+  String get reminderFrequency => _t('reminderFrequency');
+  String get freqDaily => _t('freqDaily');
+  String get freqMonthly => _t('freqMonthly');
+  String get freqAnnual => _t('freqAnnual');
+  String get nextReminder => _t('nextReminder');
+  String get remindersGoalReached => _t('remindersGoalReached');
+  String get remindersDisabledHint => _t('remindersDisabledHint');
 
   // ── Payment Screen ─────────────────────────────────────────
   String get makePayment => _t('makePayment');
@@ -162,6 +175,38 @@ class AppLocalizations {
   String get settings => _t('settings');
   String get help => _t('help');
   String get logout => _t('logout');
+  String get helpFaq => _t('helpFaq');
+  String get helpFaqSubtitle => _t('helpFaqSubtitle');
+  String get aboutApp => _t('aboutApp');
+  String get appVersion => _t('appVersion');
+  String get contactUs => _t('contactUs');
+  String get contactViaWhatsApp => _t('contactViaWhatsApp');
+  String get contactViaEmail => _t('contactViaEmail');
+  String get contactWebsite => _t('contactWebsite');
+  String get faqCategoryPayments => _t('faqCategoryPayments');
+  String get faqCategoryAccount => _t('faqCategoryAccount');
+  String get faqCategoryGeneral => _t('faqCategoryGeneral');
+  String get reportIssue => _t('reportIssue');
+  String get needMoreHelp => _t('needMoreHelp');
+  String get needMoreHelpSub => _t('needMoreHelpSub');
+  String get contactSupport => _t('contactSupport');
+  String get legalSection => _t('legalSection');
+  String get faqQ1 => _t('faqQ1');
+  String get faqA1 => _t('faqA1');
+  String get faqQ2 => _t('faqQ2');
+  String get faqA2 => _t('faqA2');
+  String get faqQ3 => _t('faqQ3');
+  String get faqA3 => _t('faqA3');
+  String get faqQ4 => _t('faqQ4');
+  String get faqA4 => _t('faqA4');
+  String get faqQ5 => _t('faqQ5');
+  String get faqA5 => _t('faqA5');
+  String get faqQ6 => _t('faqQ6');
+  String get faqA6 => _t('faqA6');
+  String get faqQ7 => _t('faqQ7');
+  String get faqA7 => _t('faqA7');
+  String get faqQ8 => _t('faqQ8');
+  String get faqA8 => _t('faqA8');
 
   // ── Payment ────────────────────────────────────────────────
   String get amount => _t('amount');
@@ -172,7 +217,17 @@ class AppLocalizations {
   String get paymentFailed => _t('paymentFailed');
   String get receipt => _t('receipt');
   String get chooseAmount => _t('chooseAmount');
+  String get payments => _t('payments');
   String get chooseMethod => _t('chooseMethod');
+  String get mobileMoneyPayment => _t('mobileMoneyPayment');
+  String get enterMomoNumber => _t('enterMomoNumber');
+  String get payNow => _t('payNow');
+  String get confirmOnPhone => _t('confirmOnPhone');
+  String get pinPromptMessage => _t('pinPromptMessage');
+  String get refreshStatus => _t('refreshStatus');
+  String get awaitingPin => _t('awaitingPin');
+  String get cancelMobilePayment => _t('cancelMobilePayment');
+  String get statusRefreshed => _t('statusRefreshed');
 
   // ── Contribution Types ─────────────────────────────────────
   String get daily => _t('daily');
@@ -228,6 +283,22 @@ class AppLocalizations {
   String get passwordMismatch => _t('passwordMismatch');
   String get networkError => _t('networkError');
   String get unknownError => _t('unknownError');
+  String get errWrongPassword => _t('errWrongPassword');
+  String get errUserNotFound => _t('errUserNotFound');
+  String get errEmailInUse => _t('errEmailInUse');
+  String get errWeakPassword => _t('errWeakPassword');
+  String get errTooManyRequests => _t('errTooManyRequests');
+  String get errInvalidOtp => _t('errInvalidOtp');
+  String get errUserDisabled => _t('errUserDisabled');
+  String get errInvalidCredential => _t('errInvalidCredential');
+
+  // ── Auth — reset password & onboarding ─────────────────────
+  String get resetPasswordTitle => _t('resetPasswordTitle');
+  String get resetPasswordHint => _t('resetPasswordHint');
+  String get sendResetLink => _t('sendResetLink');
+  String get resetEmailSent => _t('resetEmailSent');
+  String get appleComingSoon => _t('appleComingSoon');
+  String get preferencesEditableLater => _t('preferencesEditableLater');
 
   // ── Member ─────────────────────────────────────────────────
   String get memberNumber => _t('memberNumber');
@@ -260,10 +331,26 @@ class AppLocalizations {
   String get submissionDate => _t('submissionDate');
   String get confirmedOn => _t('confirmedOn');
   String get validationTrace => _t('validationTrace');
-  String bulkStep1Label(int n) =>
-      _t('bulkStep1Label').replaceAll('{n}', '$n');
-  String bulkStep2Label(int n) =>
-      _t('bulkStep2Label').replaceAll('{n}', '$n');
+  String get approvePayment => _t('approvePayment');
+  String get proofOfTransfer => _t('proofOfTransfer');
+
+  // ── Bank Transfer ──────────────────────────────────────────
+  String get bankTransferTitle => _t('bankTransferTitle');
+  String get bankTransferInstructions => _t('bankTransferInstructions');
+  String get bankNameLabel => _t('bankNameLabel');
+  String get accountNumberLabel => _t('accountNumberLabel');
+  String get accountHolderLabel => _t('accountHolderLabel');
+  String get attachProof => _t('attachProof');
+  String get proofAttached => _t('proofAttached');
+  String get proofRequired => _t('proofRequired');
+  String get confirmContributionBtn => _t('confirmContributionBtn');
+  String get bankDetailsTitle => _t('bankDetailsTitle');
+  String get bankDetailsSubtitle => _t('bankDetailsSubtitle');
+  String get instructionsOptional => _t('instructionsOptional');
+  String get fillRequiredFields => _t('fillRequiredFields');
+  String get savedSuccessfully => _t('savedSuccessfully');
+  String bulkStep1Label(int n) => _t('bulkStep1Label').replaceAll('{n}', '$n');
+  String bulkStep2Label(int n) => _t('bulkStep2Label').replaceAll('{n}', '$n');
   String bulkStep1Detail(int n) =>
       _t('bulkStep1Detail').replaceAll('{n}', '$n');
   String bulkStep2Detail(int n) =>
@@ -286,6 +373,18 @@ class AppLocalizations {
   String get inactiveFilter => _t('inactiveFilter');
   String get confirmStatusChange => _t('confirmStatusChange');
   String get confirmRoleChange => _t('confirmRoleChange');
+
+  // ── Admin management ───────────────────────────────────────
+  String get manageAdmins => _t('manageAdmins');
+  String get manageAdminsSubtitle => _t('manageAdminsSubtitle');
+  String get addAdmin => _t('addAdmin');
+  String get promoteAction => _t('promoteAction');
+  String get demoteAction => _t('demoteAction');
+  String get noAdminsFound => _t('noAdminsFound');
+  String get currentAdmins => _t('currentAdmins');
+  String get superAdminOnly => _t('superAdminOnly');
+  String get cannotRemoveLastSuperAdmin => _t('cannotRemoveLastSuperAdmin');
+  String get selectUserToPromote => _t('selectUserToPromote');
 
   // ── Admin ──────────────────────────────────────────────────
   String get totalMembers => _t('totalMembers');
@@ -453,6 +552,11 @@ class AppLocalizations {
   String get regionMappingHint => _t('regionMappingHint');
   String get initRegionalWallets => _t('initRegionalWallets');
   String get regionalWalletsReady => _t('regionalWalletsReady');
+  String get walletTab => _t('walletTab');
+  String get initWallets => _t('initWallets');
+  String get walletsReady => _t('walletsReady');
+  String get recalcRegionTotals => _t('recalcRegionTotals');
+  String get regionTotalsUpdated => _t('regionTotalsUpdated');
   String get byRegion => _t('byRegion');
 
   // ── Onboarding ─────────────────────────────────────────────
@@ -493,10 +597,11 @@ class AppLocalizations {
 
   String get backfillContributions => _t('backfillContributions');
   String get backfillContributionsHint => _t('backfillContributionsHint');
-  String backfillDone(int created, int skipped, int failed) => _t('backfillDone')
-      .replaceAll('{created}', '$created')
-      .replaceAll('{skipped}', '$skipped')
-      .replaceAll('{failed}', '$failed');
+  String backfillDone(int created, int skipped, int failed) =>
+      _t('backfillDone')
+          .replaceAll('{created}', '$created')
+          .replaceAll('{skipped}', '$skipped')
+          .replaceAll('{failed}', '$failed');
 
   // ── Months ─────────────────────────────────────────────────
   String get january => _t('january');
@@ -513,10 +618,279 @@ class AppLocalizations {
   String get december => _t('december');
   String get focalReportsTitle => _t('focalReportsTitle');
 
+  // ── Dashboard misc (FR/EN/AR sweep) ──────────────────────
+  String get contribute => _t('contribute');
+  String get viewAsMember => _t('viewAsMember');
+  String get chartLegendNormal => _t('chartLegendNormal');
+  String get chartLegendToday => _t('chartLegendToday');
+  String get chartLegendRecord => _t('chartLegendRecord');
+  String get syncCounters => _t('syncCounters');
+  String get totalContributedLabel => _t('totalContributedLabel');
+  String get sessionAddPaymentsHint => _t('sessionAddPaymentsHint');
+  String get newBadge => _t('newBadge');
+  String get targetMonth => _t('targetMonth');
+
+  // ── Focal dashboard widgets ──────────────────────────────
+  String get todayCollected => _t('todayCollected');
+  String get todayContribCount => _t('todayContribCount');
+  String get todayNewMembers => _t('todayNewMembers');
+
+  // ── Admin dashboard widgets ──────────────────────────────
+  String get awaitingFirstValidator => _t('awaitingFirstValidator');
+  String get awaitingSecondValidator => _t('awaitingSecondValidator');
+  String get topFocalOfficers => _t('topFocalOfficers');
+  String get paymentMethodDistribution => _t('paymentMethodDistribution');
+  String get noFocalActivity => _t('noFocalActivity');
+  String get noPaymentsThisMonth => _t('noPaymentsThisMonth');
+
+  // ── Audit (super-admin only) ─────────────────────────────
+  String get auditMatricules => _t('auditMatricules');
+  String get refresh => _t('refresh');
+  String get auditMembersTotal => _t('auditMembersTotal');
+  String get auditMissingMatricule => _t('auditMissingMatricule');
+  String get auditMalformedMatricule => _t('auditMalformedMatricule');
+  String get auditDuplicateMatricule => _t('auditDuplicateMatricule');
+  String auditOrphanContributions(int n) =>
+      _t('auditOrphanContributions').replaceAll('{n}', '$n');
+  String get auditAllClean => _t('auditAllClean');
+  String get auditIssuesDetected => _t('auditIssuesDetected');
+  String get auditFailed => _t('auditFailed');
+  String get repairMemberNumbers => _t('repairMemberNumbers');
+  String get repairMemberNumbersDesc => _t('repairMemberNumbersDesc');
+  String get repairConfirmTitle => _t('repairConfirmTitle');
+  String get repairConfirmMsg => _t('repairConfirmMsg');
+  String repairResult(int repaired) =>
+      _t('repairResult').replaceAll('{repaired}', '$repaired');
+  String get repairNoneNeeded => _t('repairNoneNeeded');
+  String get repairError => _t('repairError');
+
+  // ── Analytics screen ─────────────────────────────────────
+  String get analyticsTitle => _t('analyticsTitle');
+  String get analyticsSubtitle => _t('analyticsSubtitle');
+  String get periodToday => _t('periodToday');
+  String get periodLast7d => _t('periodLast7d');
+  String get periodLast30d => _t('periodLast30d');
+  String get periodThisMonth => _t('periodThisMonth');
+  String get periodThisYear => _t('periodThisYear');
+  String get periodCustom => _t('periodCustom');
+  String get kpiTotalRevenue => _t('kpiTotalRevenue');
+  String get kpiTxCount => _t('kpiTxCount');
+  String get kpiAvgPayment => _t('kpiAvgPayment');
+  String get kpiActiveContributors => _t('kpiActiveContributors');
+  String get revenueOverTime => _t('revenueOverTime');
+  String get paymentMethodBreakdown => _t('paymentMethodBreakdown');
+  String get regionalRevenue => _t('regionalRevenue');
+  String get topContributorsTitle => _t('topContributorsTitle');
+  String get exportCsv => _t('exportCsv');
+  String get exportPdf => _t('exportPdf');
+  String get noChartData => _t('noChartData');
+  String get selectDateRange => _t('selectDateRange');
+  String get exportSuccess => _t('exportSuccess');
+  String get exportError => _t('exportError');
+
+  // ── Validation short labels & per-screen fixes ───────────
+  String get firstValidationShort => _t('firstValidationShort');
+  String get secondValidationShort => _t('secondValidationShort');
+  String get firstValidationRecorded => _t('firstValidationRecorded');
+  String get secondValidationRecorded => _t('secondValidationRecorded');
+  String get validateReportTitle => _t('validateReportTitle');
+  String validateReportBody(String name) =>
+      _t('validateReportBody').replaceAll('{name}', name);
+  String validateReportConfirmBody(String count, String amount) =>
+      _t('validateReportConfirmBody')
+          .replaceAll('{count}', count)
+          .replaceAll('{amount}', amount);
+  String reportConfirmedMessage(String count, String amount) =>
+      _t('reportConfirmedMessage')
+          .replaceAll('{count}', count)
+          .replaceAll('{amount}', amount);
+  String get rejectReportTitle => _t('rejectReportTitle');
+  String get enterRejectReasonShort => _t('enterRejectReasonShort');
+  String get focalReportsHeaderTitle => _t('focalReportsHeaderTitle');
+  String get focalReportsHeaderSubtitle => _t('focalReportsHeaderSubtitle');
+  String get pendingFilter => _t('pendingFilter');
+  String get validatedFilter => _t('validatedFilter');
+  String get rejectedFilter => _t('rejectedFilter');
+  String get noFocalReports => _t('noFocalReports');
+  String membersCount(int n) => _t('membersCount').replaceAll('{n}', '$n');
+  String newMembersCount(int n) =>
+      _t('newMembersCount').replaceAll('{n}', '$n');
+  String get totalLabel => _t('totalLabel');
+  String memberStatusUpdated(String name) =>
+      _t('memberStatusUpdated').replaceAll('{name}', name);
+  String memberRoleUpdated(String name) =>
+      _t('memberRoleUpdated').replaceAll('{name}', name);
+  String syncCountersResult(int members, String amount) =>
+      _t('syncCountersResult')
+          .replaceAll('{members}', '$members')
+          .replaceAll('{amount}', amount);
+  String get syncCountersError => _t('syncCountersError');
+  String get yearLabel => _t('yearLabel');
+  String get membersTab => _t('membersTab');
+
+  // ── Send notification sheet ──────────────────────────────
+  String get sendNotificationTitle => _t('sendNotificationTitle');
+  String get targetActiveMembers => _t('targetActiveMembers');
+  String get targetFocal => _t('targetFocal');
+  String get targetAdmins => _t('targetAdmins');
+  String get recipientsLabel => _t('recipientsLabel');
+  String get titleLabel => _t('titleLabel');
+  String get messageLabel => _t('messageLabel');
+  String get titlePlaceholder => _t('titlePlaceholder');
+  String get messagePlaceholder => _t('messagePlaceholder');
+  String get titleRequired => _t('titleRequired');
+  String get messageRequired => _t('messageRequired');
+  String get noRecipientsFound => _t('noRecipientsFound');
+  String notificationsSent(int n) =>
+      _t('notificationsSent').replaceAll('{n}', '$n');
+  String get sendingInProgress => _t('sendingInProgress');
+  String get sendError => _t('sendError');
+  String get sendBtn => _t('sendBtn');
+
+  // ── Localized label helpers ──────────────────────────────
+  // Replace AppUtils.xxxLabel(...) in UI; AppUtils helpers stay for
+  // non-UI use (WhatsApp report text, logs).
+
+  String paymentMethodName(String method) {
+    switch (method) {
+      case AppConstants.paymentMtnMomo:
+        return mtnMomo;
+      case AppConstants.paymentOrangeMoney:
+        return orangeMoney;
+      case AppConstants.paymentCash:
+        return cash;
+      case AppConstants.paymentBankTransfer:
+        return bankTransfer;
+      default:
+        return method;
+    }
+  }
+
+  String statusName(String status) {
+    switch (status) {
+      case AppConstants.statusConfirmed:
+        return confirmed;
+      case AppConstants.statusPending:
+        return pending;
+      case AppConstants.statusFailed:
+        return failed;
+      case AppConstants.statusRefunded:
+        return refunded;
+      case AppConstants.userStatusActive:
+        return active;
+      case AppConstants.userStatusInactive:
+        return inactive;
+      case AppConstants.userStatusSuspended:
+        return suspended;
+      default:
+        return status;
+    }
+  }
+
+  String roleName(String role) {
+    switch (role) {
+      case AppConstants.roleMember:
+        return member;
+      case AppConstants.roleFocal:
+        return focal;
+      case AppConstants.roleAdmin:
+        return admin;
+      case AppConstants.roleSuperAdmin:
+        return superAdmin;
+      default:
+        return role;
+    }
+  }
+
+  String periodTypeName(String type) {
+    switch (type) {
+      case AppConstants.periodDaily:
+        return daily;
+      case AppConstants.periodMonthly:
+        return monthly;
+      case AppConstants.periodAnnual:
+        return annual;
+      case AppConstants.periodCustom:
+        return custom;
+      default:
+        return type;
+    }
+  }
+
   List<String> get monthNames => [
-        january, february, march, april, may, june,
-        july, august, september, october, november, december,
+        january,
+        february,
+        march,
+        april,
+        may,
+        june,
+        july,
+        august,
+        september,
+        october,
+        november,
+        december,
       ];
+
+  // ── Events ──────────────────────────────────────────────────
+  String get events => _t('events');
+  String get upcomingEvents => _t('upcomingEvents');
+  String get pastEvents => _t('pastEvents');
+  String get noEvents => _t('noEvents');
+  String get eventDate => _t('eventDate');
+  String get eventTime => _t('eventTime');
+  String get eventLocation => _t('eventLocation');
+  String get eventDescription => _t('eventDescription');
+  String get eventTitleLabel => _t('eventTitleLabel');
+  String get createEvent => _t('createEvent');
+  String get editEvent => _t('editEvent');
+  String get deleteEvent => _t('deleteEvent');
+  String get deleteEventConfirm => _t('deleteEventConfirm');
+  String get publishEvent => _t('publishEvent');
+  String get unpublishEvent => _t('unpublishEvent');
+  String get eventDraft => _t('eventDraft');
+  String get eventPublished => _t('eventPublished');
+  String get eventCancelled => _t('eventCancelled');
+  String get addCoverImage => _t('addCoverImage');
+  String get changeCoverImage => _t('changeCoverImage');
+  String get eventSaved => _t('eventSaved');
+  String get eventDeleted => _t('eventDeleted');
+  String get manageEvents => _t('manageEvents');
+  String get eventEndDate => _t('eventEndDate');
+  String get eventOrganizer => _t('eventOrganizer');
+  String get eventCategory => _t('eventCategory');
+  String get eventPhotos => _t('eventPhotos');
+  String get addPhotos => _t('addPhotos');
+  String get maxPhotosReached => _t('maxPhotosReached');
+  String get shareEvent => _t('shareEvent');
+  String get joinUmmahCta => _t('joinUmmahCta');
+  String get catGeneral => _t('catGeneral');
+  String get catFundraiser => _t('catFundraiser');
+  String get catMeeting => _t('catMeeting');
+  String get catReligious => _t('catReligious');
+  String get catCommunity => _t('catCommunity');
+
+  // ── Connectivity / offline ──────────────────────────────────
+  String get offlineBannerMessage => _t('offlineBannerMessage');
+  String get syncingMessage => _t('syncingMessage');
+  String get syncedMessage => _t('syncedMessage');
+  String get receiptPendingSync => _t('receiptPendingSync');
+
+  String categoryLabel(String key) {
+    switch (key) {
+      case 'fundraiser':
+        return catFundraiser;
+      case 'meeting':
+        return catMeeting;
+      case 'religious':
+        return catReligious;
+      case 'community':
+        return catCommunity;
+      case 'general':
+      default:
+        return catGeneral;
+    }
+  }
 }
 
 class _AppLocalizationsDelegate

@@ -8,6 +8,7 @@ import 'package:intl/intl.dart';
 
 import '../../../core/constants/app_constants.dart';
 import '../../../core/l10n/app_localizations.dart';
+import '../../../core/services/router_service.dart';
 import '../../../core/theme/app_theme.dart';
 import '../../../data/models/wallet_account_model.dart';
 import '../../../data/repositories/wallet_repository.dart';
@@ -47,6 +48,11 @@ final _adminSummaryProvider =
   return _walletRepo.watchSummary();
 });
 
+final _regionTotalsProvider =
+    StreamProvider.autoDispose<Map<String, int>>((ref) {
+  return _walletRepo.watchRegionTotals();
+});
+
 // ── Screen ─────────────────────────────────────────────────────
 
 class AdminWalletScreen extends ConsumerStatefulWidget {
@@ -59,6 +65,7 @@ class AdminWalletScreen extends ConsumerStatefulWidget {
 class _AdminWalletScreenState extends ConsumerState<AdminWalletScreen> {
   bool _seeding   = false;
   bool _backfilling = false;
+  bool _recalcRegions = false;
 
   // ── Helpers ────────────────────────────────────────────────
 
@@ -87,7 +94,11 @@ class _AdminWalletScreenState extends ConsumerState<AdminWalletScreen> {
 
   /// Creates one wallet account per Cameroon region (idempotent) and
   /// updates the payment map to route each region to its account.
-  Future<void> _initRegionalWallets(
+  /// Idempotently creates the 4 payment-method wallets and sets
+  /// payment_method_map = { method → accountId }. Re-running reuses any wallet
+  /// already mapped. Obsolete region-tagged wallets are archived so the tab
+  /// shows only the 4 method wallets.
+  Future<void> _initMethodWallets(
     AppLocalizations l,
     List<WalletAccountModel> existingAccounts,
   ) async {
@@ -95,45 +106,55 @@ class _AdminWalletScreenState extends ConsumerState<AdminWalletScreen> {
     setState(() => _seeding = true);
 
     final uid = FirebaseAuth.instance.currentUser?.uid ?? '';
+    final currentMap = ref.read(_paymentMapProvider).valueOrNull ?? {};
+    final existingById = {for (final a in existingAccounts) a.id: a};
 
-    // Map region → existing accountId for already-created regional wallets
-    final existingByRegion = <String, String>{};
-    for (final acc in existingAccounts) {
-      if (acc.region != null && acc.region!.isNotEmpty) {
-        existingByRegion[acc.region!] = acc.id;
-      }
-    }
+    // method → (name, type, color)
+    final defs = <String, (String, String, String)>{
+      AppConstants.paymentMtnMomo:
+          ('MTN Mobile Money', AppConstants.walletTypeMobileMoney, '#f59e0b'),
+      AppConstants.paymentOrangeMoney:
+          ('Orange Money', AppConstants.walletTypeMobileMoney, '#ea580c'),
+      AppConstants.paymentCash:
+          ('Espèces', AppConstants.walletTypeCash, '#16a34a'),
+      AppConstants.paymentBankTransfer:
+          ('Virement bancaire', AppConstants.walletTypeBank, '#0ea5e9'),
+    };
 
     try {
       final paymentMap = <String, String>{};
 
-      for (final region in AppConstants.cameroonRegions) {
-        final existingId = existingByRegion[region];
-        if (existingId != null) {
-          paymentMap[region] = existingId;
+      for (final entry in defs.entries) {
+        final method = entry.key;
+        final existingId = currentMap[method];
+        if (existingId != null && existingById.containsKey(existingId)) {
+          paymentMap[method] = existingId;
         } else {
-          final color =
-              AppConstants.regionWalletColors[region] ??
-              AppConstants.walletColorPalette.first;
           final id = await _walletRepo.createAccount(
-            name: 'Trésorerie – $region',
-            type: AppConstants.walletTypeOther,
+            name: entry.value.$1,
+            type: entry.value.$2,
             currency: AppConstants.defaultCurrency,
             openingBalance: 0,
-            color: color,
-            region: region,
+            color: entry.value.$3,
             createdBy: uid,
           );
-          paymentMap[region] = id;
+          paymentMap[method] = id;
         }
       }
 
       await _walletRepo.updatePaymentMap(paymentMap);
 
+      // Archive obsolete region-tagged wallets (we now route by method).
+      for (final acc in existingAccounts) {
+        if (acc.region != null && acc.region!.isNotEmpty && !acc.archived) {
+          await _walletRepo.archiveAccount(acc.id);
+        }
+      }
+
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content: Text(l.regionalWalletsReady),
+            content: Text(l.walletsReady),
             backgroundColor: AppColors.success,
           ),
         );
@@ -224,6 +245,34 @@ class _AdminWalletScreenState extends ConsumerState<AdminWalletScreen> {
     }
   }
 
+  /// Recomputes per-region contribution totals (super-admin only).
+  Future<void> _recalcRegionTotals(AppLocalizations l) async {
+    if (_recalcRegions) return;
+    setState(() => _recalcRegions = true);
+    try {
+      await _walletRepo.backfillRegionTotals();
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(l.regionTotalsUpdated),
+            backgroundColor: AppColors.success,
+          ),
+        );
+      }
+    } catch (_) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(l.unknownError),
+            backgroundColor: AppColors.error,
+          ),
+        );
+      }
+    } finally {
+      if (mounted) setState(() => _recalcRegions = false);
+    }
+  }
+
   // ── Build ──────────────────────────────────────────────────
 
   @override
@@ -251,6 +300,9 @@ class _AdminWalletScreenState extends ConsumerState<AdminWalletScreen> {
     final l = AppLocalizations.of(context);
     final accountsAsync = ref.watch(_accountsProvider);
     final accounts = accountsAsync.valueOrNull ?? [];
+    final isSuperAdmin =
+        ref.watch(currentUserProfileProvider).valueOrNull?.isSuperAdmin ??
+            false;
 
     return Container(
       decoration: const BoxDecoration(
@@ -268,14 +320,18 @@ class _AdminWalletScreenState extends ConsumerState<AdminWalletScreen> {
       ),
       child: Row(
         children: [
-          IconButton(
-            onPressed: () => context.pop(),
-            icon: const Icon(Icons.arrow_back_ios_new_rounded,
-                color: Colors.white, size: 20),
-            padding: EdgeInsets.zero,
-            constraints: const BoxConstraints(),
-          ),
-          const SizedBox(width: AppConstants.spaceSM),
+          // Shown only when pushed (e.g. deep-linked); as a nav tab there's
+          // nothing to pop.
+          if (context.canPop()) ...[
+            IconButton(
+              onPressed: () => context.pop(),
+              icon: const Icon(Icons.arrow_back_ios_new_rounded,
+                  color: Colors.white, size: 20),
+              padding: EdgeInsets.zero,
+              constraints: const BoxConstraints(),
+            ),
+            const SizedBox(width: AppConstants.spaceSM),
+          ],
           Expanded(
             child: Text(
               l.adminWalletTitle,
@@ -286,7 +342,9 @@ class _AdminWalletScreenState extends ConsumerState<AdminWalletScreen> {
               ),
             ),
           ),
-          // Initialize regional wallets button
+          // Maintenance / edit actions — super_admin only (view-only for admins)
+          if (isSuperAdmin) ...[
+          // Initialize the 4 payment-method wallets
           if (_seeding)
             const SizedBox(
               width: 20,
@@ -296,8 +354,8 @@ class _AdminWalletScreenState extends ConsumerState<AdminWalletScreen> {
             )
           else
             IconButton(
-              onPressed: () => _initRegionalWallets(l, accounts),
-              tooltip: l.initRegionalWallets,
+              onPressed: () => _initMethodWallets(l, accounts),
+              tooltip: l.initWallets,
               icon: Container(
                 padding: const EdgeInsets.all(6),
                 decoration: BoxDecoration(
@@ -354,6 +412,7 @@ class _AdminWalletScreenState extends ConsumerState<AdminWalletScreen> {
             padding: EdgeInsets.zero,
             constraints: const BoxConstraints(),
           ),
+          ],
         ],
       ),
     );
@@ -369,9 +428,128 @@ class _AdminWalletScreenState extends ConsumerState<AdminWalletScreen> {
         const SizedBox(height: AppConstants.spaceMD),
         _buildAccountsSection(context),
         const SizedBox(height: AppConstants.spaceMD),
-        _buildRegionMappingSection(context),
+        _buildRegionalSection(context),
         const SizedBox(height: AppConstants.spaceXL),
       ],
+    );
+  }
+
+  Widget _buildRegionalSection(BuildContext context) {
+    final l = AppLocalizations.of(context);
+    final totals = ref.watch(_regionTotalsProvider).valueOrNull ?? {};
+    final isSuperAdmin =
+        ref.watch(currentUserProfileProvider).valueOrNull?.isSuperAdmin ??
+            false;
+
+    final sorted = totals.entries.where((e) => e.value > 0).toList()
+      ..sort((a, b) => b.value.compareTo(a.value));
+    final grandTotal = sorted.fold<int>(0, (s, e) => s + e.value);
+
+    return Container(
+      margin: const EdgeInsets.symmetric(horizontal: AppConstants.spaceMD),
+      padding: const EdgeInsets.all(AppConstants.spaceMD),
+      decoration: BoxDecoration(
+        color: AppColors.surface,
+        borderRadius: BorderRadius.circular(AppConstants.radiusLG),
+        border: Border.all(color: AppColors.border),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Row(
+            children: [
+              Expanded(
+                child: Text(
+                  l.byRegion.toUpperCase(),
+                  style: GoogleFonts.plusJakartaSans(
+                    fontSize: 11,
+                    fontWeight: FontWeight.w700,
+                    color: AppColors.textGray,
+                    letterSpacing: 0.8,
+                  ),
+                ),
+              ),
+              if (isSuperAdmin)
+                _recalcRegions
+                    ? const SizedBox(
+                        width: 16,
+                        height: 16,
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      )
+                    : IconButton(
+                        onPressed: () => _recalcRegionTotals(l),
+                        tooltip: l.recalcRegionTotals,
+                        icon: const Icon(Icons.refresh_rounded,
+                            size: 18, color: AppColors.textGray),
+                        padding: EdgeInsets.zero,
+                        constraints: const BoxConstraints(),
+                      ),
+            ],
+          ),
+          const SizedBox(height: AppConstants.spaceSM),
+          if (sorted.isEmpty)
+            Padding(
+              padding: const EdgeInsets.symmetric(
+                  vertical: AppConstants.spaceMD),
+              child: Text(
+                l.noData,
+                style: GoogleFonts.plusJakartaSans(
+                    fontSize: 13, color: AppColors.textGray),
+              ),
+            )
+          else
+            ...sorted.map((e) {
+              final pct = grandTotal > 0 ? e.value / grandTotal : 0.0;
+              final color = () {
+                final hex = AppConstants.regionWalletColors[e.key];
+                if (hex == null) return AppColors.primary;
+                return Color(
+                    int.parse('FF${hex.replaceFirst('#', '')}', radix: 16));
+              }();
+              return Padding(
+                padding:
+                    const EdgeInsets.only(bottom: AppConstants.spaceSM),
+                child: Row(
+                  children: [
+                    Container(
+                      width: 8,
+                      height: 8,
+                      decoration:
+                          BoxDecoration(color: color, shape: BoxShape.circle),
+                    ),
+                    const SizedBox(width: AppConstants.spaceSM),
+                    Expanded(
+                      child: Text(
+                        e.key,
+                        style: GoogleFonts.plusJakartaSans(
+                          fontSize: 13,
+                          fontWeight: FontWeight.w600,
+                          color: AppColors.textDark,
+                        ),
+                      ),
+                    ),
+                    Text(
+                      '${(pct * 100).toStringAsFixed(0)}%',
+                      style: GoogleFonts.plusJakartaSans(
+                        fontSize: 11,
+                        color: AppColors.textGray,
+                      ),
+                    ),
+                    const SizedBox(width: AppConstants.spaceSM),
+                    Text(
+                      formatFCFA(e.value),
+                      style: GoogleFonts.plusJakartaSans(
+                        fontSize: 13,
+                        fontWeight: FontWeight.w700,
+                        color: AppColors.success,
+                      ),
+                    ),
+                  ],
+                ),
+              );
+            }),
+        ],
+      ),
     );
   }
 
@@ -687,188 +865,6 @@ class _AdminWalletScreenState extends ConsumerState<AdminWalletScreen> {
             color: AppColors.border.withValues(alpha: 0.4),
             borderRadius: BorderRadius.circular(AppConstants.radiusLG),
           ),
-        ),
-      ),
-    );
-  }
-
-  // ── Regional mapping section ────────────────────────────────
-
-  Widget _buildRegionMappingSection(BuildContext context) {
-    final l = AppLocalizations.of(context);
-    final paymentMapAsync = ref.watch(_paymentMapProvider);
-    final accountsAsync  = ref.watch(_accountsProvider);
-
-    final accounts   = accountsAsync.valueOrNull ?? [];
-    final paymentMap = paymentMapAsync.valueOrNull ?? {};
-
-    return Container(
-      margin: const EdgeInsets.symmetric(horizontal: AppConstants.spaceMD),
-      decoration: BoxDecoration(
-        color: AppColors.surface,
-        borderRadius: BorderRadius.circular(AppConstants.radiusLG),
-        border: Border.all(color: AppColors.border),
-      ),
-      child: Theme(
-        data: Theme.of(context).copyWith(dividerColor: Colors.transparent),
-        child: ExpansionTile(
-          tilePadding: const EdgeInsets.symmetric(
-            horizontal: AppConstants.spaceMD,
-            vertical: AppConstants.spaceXS,
-          ),
-          childrenPadding: const EdgeInsets.fromLTRB(
-            AppConstants.spaceMD,
-            0,
-            AppConstants.spaceMD,
-            AppConstants.spaceMD,
-          ),
-          leading: Container(
-            width: 36,
-            height: 36,
-            decoration: BoxDecoration(
-              color: AppColors.info.withValues(alpha: 0.1),
-              borderRadius: BorderRadius.circular(AppConstants.radiusSM),
-            ),
-            child: const Icon(Icons.public_rounded,
-                color: AppColors.info, size: 18),
-          ),
-          title: Text(
-            l.regionMapping,
-            style: const TextStyle(
-              color: AppColors.textDark,
-              fontSize: 14,
-              fontWeight: FontWeight.w700,
-            ),
-          ),
-          subtitle: Text(
-            l.regionMappingHint,
-            style: const TextStyle(
-              color: AppColors.textGray,
-              fontSize: 12,
-            ),
-          ),
-          children: [
-            const Divider(height: 1),
-            const SizedBox(height: AppConstants.spaceSM),
-            ...AppConstants.cameroonRegions.map((region) {
-              final currentAccountId = paymentMap[region];
-              final regionColor = AppConstants.regionWalletColors[region];
-              final accentColor = regionColor != null
-                  ? Color(int.parse(
-                      'FF${regionColor.replaceFirst('#', '')}',
-                      radix: 16))
-                  : AppColors.primary;
-
-              return Padding(
-                padding:
-                    const EdgeInsets.only(bottom: AppConstants.spaceSM),
-                child: Row(
-                  children: [
-                    // Region color dot
-                    Container(
-                      width: 8,
-                      height: 8,
-                      decoration: BoxDecoration(
-                        color: accentColor,
-                        shape: BoxShape.circle,
-                      ),
-                    ),
-                    const SizedBox(width: AppConstants.spaceSM),
-                    // Region name
-                    Expanded(
-                      child: Text(
-                        region,
-                        style: const TextStyle(
-                          color: AppColors.textMid,
-                          fontSize: 13,
-                          fontWeight: FontWeight.w600,
-                        ),
-                      ),
-                    ),
-                    const SizedBox(width: AppConstants.spaceSM),
-                    // Account dropdown
-                    DropdownButton<String?>(
-                      value: accounts.any((a) => a.id == currentAccountId)
-                          ? currentAccountId
-                          : null,
-                      isDense: true,
-                      underline: const SizedBox.shrink(),
-                      style: const TextStyle(
-                        color: AppColors.textDark,
-                        fontSize: 13,
-                      ),
-                      hint: const Text(
-                        '— Non affecté —',
-                        style: TextStyle(
-                          color: AppColors.textGray,
-                          fontSize: 12,
-                        ),
-                      ),
-                      items: [
-                        const DropdownMenuItem<String?>(
-                          value: null,
-                          child: Text(
-                            '— Non affecté —',
-                            style: TextStyle(
-                              color: AppColors.textGray,
-                              fontSize: 12,
-                            ),
-                          ),
-                        ),
-                        ...accounts.map(
-                          (a) => DropdownMenuItem<String?>(
-                            value: a.id,
-                            child: Row(
-                              mainAxisSize: MainAxisSize.min,
-                              children: [
-                                Container(
-                                  width: 8,
-                                  height: 8,
-                                  decoration: BoxDecoration(
-                                    color: a.accentColor,
-                                    shape: BoxShape.circle,
-                                  ),
-                                ),
-                                const SizedBox(width: 6),
-                                Text(
-                                  a.name,
-                                  style: const TextStyle(fontSize: 13),
-                                  overflow: TextOverflow.ellipsis,
-                                ),
-                              ],
-                            ),
-                          ),
-                        ),
-                      ],
-                      onChanged: (newAccountId) async {
-                        final updated = Map<String, String>.from(paymentMap);
-                        if (newAccountId == null) {
-                          updated.remove(region);
-                        } else {
-                          updated[region] = newAccountId;
-                        }
-                        final messenger = ScaffoldMessenger.of(context);
-                        final errorMsg =
-                            AppLocalizations.of(context).unknownError;
-                        try {
-                          await _walletRepo.updatePaymentMap(updated);
-                        } catch (_) {
-                          if (mounted) {
-                            messenger.showSnackBar(
-                              SnackBar(
-                                content: Text(errorMsg),
-                                backgroundColor: AppColors.error,
-                              ),
-                            );
-                          }
-                        }
-                      },
-                    ),
-                  ],
-                ),
-              );
-            }),
-          ],
         ),
       ),
     );

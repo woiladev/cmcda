@@ -5,6 +5,7 @@ import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/widgets.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'package:go_router/go_router.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 import '../../data/models/notification_model.dart';
 import '../constants/app_constants.dart';
@@ -95,10 +96,45 @@ class NotificationService {
 
   Future<void> saveToken(String userId, String token) async {
     try {
+      final prefs = await SharedPreferences.getInstance();
+      final prev = prefs.getString('_fcm_token_$userId');
+      if (prev == token) return; // unchanged — skip write to avoid triggering Cloud Functions
       await _db
           .collection(AppConstants.usersCollection)
           .doc(userId)
-          .update({'fcmToken': token, 'updatedAt': Timestamp.now()});
+          .update({'fcmTokens': FieldValue.arrayUnion([token])});
+      await prefs.setString('_fcm_token_$userId', token);
+    } on FirebaseException catch (e) {
+      if (e.code == 'permission-denied' || e.code == 'not-found') return;
+      rethrow;
+    }
+  }
+
+  /// Fetches this device's FCM token and stores it on [userId]'s doc. Call
+  /// immediately after a user document is created (email signup / profile
+  /// completion): the authStateChanges listener fires on credential creation,
+  /// which is *before* that doc exists, so its save is dropped as not-found and
+  /// the device would otherwise never be registered for push that session.
+  Future<void> registerToken(String userId) async {
+    final token = await _getToken();
+    if (token != null) await saveToken(userId, token);
+  }
+
+  /// Removes this device's token from the user doc. Call before signing out so
+  /// the device stops receiving pushes for the account that just logged out.
+  Future<void> removeTokenOnSignOut() async {
+    final uid = FirebaseAuth.instance.currentUser?.uid;
+    if (uid == null) return;
+    final token = await _getToken();
+    if (token == null) return;
+    try {
+      await _db
+          .collection(AppConstants.usersCollection)
+          .doc(uid)
+          .update({
+        'fcmTokens': FieldValue.arrayRemove([token]),
+        'updatedAt': Timestamp.now(),
+      });
     } on FirebaseException catch (e) {
       if (e.code == 'permission-denied' || e.code == 'not-found') return;
       rethrow;
@@ -177,32 +213,11 @@ class NotificationService {
   }
 
   // ── Notification Templates ────────────────────────────────
-
-  Future<void> notifyPaymentConfirmed({
-    required String userId,
-    required String amount,
-    required String receiptNumber,
-  }) async {
-    await sendNotification(
-      userId: userId,
-      type: NotificationModel.typePaymentConfirmed,
-      title: 'Paiement confirmé',
-      body: 'Votre contribution de $amount a été confirmée. Reçu n° $receiptNumber.',
-      data: {'amount': amount, 'receiptNumber': receiptNumber},
-    );
-  }
-
-  Future<void> notifyWelcome({
-    required String userId,
-    required String firstName,
-  }) async {
-    await sendNotification(
-      userId: userId,
-      type: NotificationModel.typeWelcome,
-      title: 'Bienvenue dans la CMCDA',
-      body: 'Bienvenue $firstName ! Votre adhésion a été enregistrée avec succès.',
-    );
-  }
+  // Payment-confirmed, payment-rejected and welcome notifications are created
+  // server-side (onContributionConfirmed / onUserWelcome Cloud Functions), so
+  // they are not duplicated here. Admin-facing templates stay client-side
+  // because they are written by admin/focal sessions, which the security rules
+  // already permit.
 
   /// Notifies all admins (except [creatorId]) that a payment needs validation.
   Future<void> notifyAdminPayment({

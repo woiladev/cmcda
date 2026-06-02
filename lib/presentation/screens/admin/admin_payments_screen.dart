@@ -6,12 +6,12 @@ import 'package:intl/intl.dart';
 
 import '../../../core/constants/app_constants.dart';
 import '../../../core/l10n/app_localizations.dart';
-import '../../../core/services/notification_service.dart';
 import '../../../core/services/router_service.dart';
 import '../../../core/theme/app_theme.dart';
 import '../../../core/utils/app_utils.dart';
 import '../../../data/models/contribution_model.dart';
 import '../../../data/repositories/contribution_repository.dart';
+import '../../../data/repositories/pawapay_repository.dart';
 
 // ── Providers ─────────────────────────────────────────────────
 
@@ -59,6 +59,7 @@ class _AdminPaymentsScreenState extends ConsumerState<AdminPaymentsScreen>
     with SingleTickerProviderStateMixin {
   late final TabController _tabs;
   final _repo = ContributionRepository();
+  final _pawaPay = PawaPayRepository();
 
   @override
   void initState() {
@@ -77,6 +78,8 @@ class _AdminPaymentsScreenState extends ConsumerState<AdminPaymentsScreen>
   Future<void> _handleValidate(
       ContributionModel c, String adminId) async {
     final l = AppLocalizations.of(context);
+    // Bank transfers use single-step approval; cash keeps dual-validation.
+    final isBank = c.isBankTransfer;
     final isFirst = c.validatedBy == null;
 
     final ok = await showDialog<bool>(
@@ -85,7 +88,9 @@ class _AdminPaymentsScreenState extends ConsumerState<AdminPaymentsScreen>
         final lc = AppLocalizations.of(ctx);
         return AlertDialog(
           title: Text(
-            isFirst ? lc.firstValidation : lc.secondValidation,
+            isBank
+                ? lc.approvePayment
+                : (isFirst ? lc.firstValidation : lc.secondValidation),
             style: GoogleFonts.plusJakartaSans(
                 fontWeight: FontWeight.w700, color: AppColors.textDark),
           ),
@@ -99,7 +104,7 @@ class _AdminPaymentsScreenState extends ConsumerState<AdminPaymentsScreen>
                       color: AppColors.textDark)),
               const SizedBox(height: 4),
               Text(
-                '${AppUtils.formatAmount(c.amount)} · ${_methodLabel(c.paymentMethod)}',
+                '${AppUtils.formatAmount(c.amount)} · ${_methodLabel(c.paymentMethod, l)}',
                 style: GoogleFonts.plusJakartaSans(
                     color: AppColors.textGray, fontSize: 13),
               ),
@@ -127,21 +132,22 @@ class _AdminPaymentsScreenState extends ConsumerState<AdminPaymentsScreen>
     final errMsg = l.unknownError;
 
     try {
-      if (isFirst) {
+      if (isBank) {
+        await _repo.confirmContribution(c.id, adminId);
+        messenger.showSnackBar(SnackBar(
+          content: Text(l.paymentSuccess),
+          backgroundColor: AppColors.success,
+        ));
+      } else if (isFirst) {
         await _repo.validatePayment(c.id, adminId);
         messenger.showSnackBar(SnackBar(
-          content: Text('${l.firstValidation} enregistrée ✓'),
+          content: Text(l.firstValidationRecorded),
           backgroundColor: AppColors.info,
         ));
       } else {
         await _repo.secondValidatePayment(c.id, adminId);
-        if (c.memberId.isNotEmpty) {
-          NotificationService.instance.notifyPaymentConfirmed(
-            userId: c.memberId,
-            amount: AppUtils.formatAmount(c.amount),
-            receiptNumber: c.receiptNumber,
-          ).ignore();
-        }
+        // The "payment confirmed" push is sent server-side by the
+        // onContributionConfirmed Cloud Function.
         messenger.showSnackBar(SnackBar(
           content: Text(l.paymentSuccess),
           backgroundColor: AppColors.success,
@@ -244,6 +250,104 @@ class _AdminPaymentsScreenState extends ConsumerState<AdminPaymentsScreen>
     }
   }
 
+  // ── Check mobile money status ─────────────────────────────
+
+  Future<void> _handleCheckMoMo(ContributionModel c) async {
+    final l = AppLocalizations.of(context);
+    final messenger = ScaffoldMessenger.of(context);
+    try {
+      final status = await _pawaPay.checkDeposit(c.id);
+      if (!mounted) return;
+      if (status == AppConstants.statusConfirmed) {
+        messenger.showSnackBar(SnackBar(
+          content: Text(l.paymentSuccess),
+          backgroundColor: AppColors.success,
+        ));
+      } else if (status == AppConstants.statusFailed) {
+        messenger.showSnackBar(SnackBar(
+          content: Text(l.paymentFailed),
+          backgroundColor: AppColors.error,
+        ));
+      } else {
+        messenger.showSnackBar(SnackBar(
+          content: Text(l.statusRefreshed),
+          backgroundColor: AppColors.info,
+        ));
+      }
+    } catch (_) {
+      if (!mounted) return;
+      messenger.showSnackBar(SnackBar(
+        content: Text(l.unknownError),
+        backgroundColor: AppColors.error,
+      ));
+    }
+  }
+
+  // ── Cancel stuck mobile money deposit ─────────────────────
+
+  Future<void> _handleCancelMoMo(
+      ContributionModel c, String adminId) async {
+    final l = AppLocalizations.of(context);
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (ctx) {
+        final lc = AppLocalizations.of(ctx);
+        return AlertDialog(
+          title: Text(
+            lc.cancelMobilePayment,
+            style: GoogleFonts.plusJakartaSans(
+                fontWeight: FontWeight.w700, color: AppColors.error),
+          ),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(c.memberName,
+                  style: GoogleFonts.plusJakartaSans(
+                      fontWeight: FontWeight.w600,
+                      color: AppColors.textDark)),
+              const SizedBox(height: 4),
+              Text(
+                '${AppUtils.formatAmount(c.amount)} · ${_methodLabel(c.paymentMethod, lc)}',
+                style: GoogleFonts.plusJakartaSans(
+                    color: AppColors.textGray, fontSize: 13),
+              ),
+            ],
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(ctx, false),
+              child: Text(lc.cancel),
+            ),
+            ElevatedButton(
+              onPressed: () => Navigator.pop(ctx, true),
+              style:
+                  ElevatedButton.styleFrom(backgroundColor: AppColors.error),
+              child: Text(lc.cancelMobilePayment,
+                  style: const TextStyle(color: Colors.white)),
+            ),
+          ],
+        );
+      },
+    );
+
+    if (ok != true || !mounted) return;
+    final messenger = ScaffoldMessenger.of(context);
+    try {
+      await _repo.rejectPayment(
+          c.id, adminId, 'Annulé par l\'administrateur');
+      messenger.showSnackBar(SnackBar(
+        content: Text(l.paymentRejected),
+        backgroundColor: AppColors.warning,
+      ));
+    } catch (_) {
+      messenger.showSnackBar(SnackBar(
+        content: Text(l.unknownError),
+        backgroundColor: AppColors.error,
+      ));
+    }
+  }
+
   // ── Build ─────────────────────────────────────────────────
 
   @override
@@ -252,8 +356,9 @@ class _AdminPaymentsScreenState extends ConsumerState<AdminPaymentsScreen>
     final pendingAsync = ref.watch(_pendingPaymentsStreamProvider);
     final allAsync = ref.watch(_allPaymentsStreamProvider);
     final statsAsync = ref.watch(_paymentStatsProvider);
-    final adminId =
-        ref.watch(currentUserProfileProvider).valueOrNull?.id ?? '';
+    final profile = ref.watch(currentUserProfileProvider).valueOrNull;
+    final adminId = profile?.id ?? '';
+    final isSuperAdmin = profile?.isSuperAdmin ?? false;
 
     return Scaffold(
       backgroundColor: AppColors.bg,
@@ -270,8 +375,11 @@ class _AdminPaymentsScreenState extends ConsumerState<AdminPaymentsScreen>
                 _PendingTabBody(
                   paymentsAsync: pendingAsync,
                   adminId: adminId,
+                  isSuperAdmin: isSuperAdmin,
                   onValidate: _handleValidate,
                   onReject: _handleReject,
+                  onCheckMoMo: _handleCheckMoMo,
+                  onCancelMoMo: _handleCancelMoMo,
                 ),
                 _AllTabBody(paymentsAsync: allAsync),
                 _RejectedTabBody(paymentsAsync: allAsync),
@@ -308,20 +416,6 @@ class _AdminPaymentsScreenState extends ConsumerState<AdminPaymentsScreen>
       ),
       child: Row(
         children: [
-          GestureDetector(
-            onTap: () => Navigator.of(context).pop(),
-            child: Container(
-              width: 36,
-              height: 36,
-              decoration: BoxDecoration(
-                color: Colors.white.withValues(alpha: 0.12),
-                shape: BoxShape.circle,
-              ),
-              child: const Icon(Icons.arrow_back_rounded,
-                  color: Colors.white, size: 20),
-            ),
-          ),
-          const SizedBox(width: AppConstants.spaceMD),
           Expanded(
             child: Text(
               l.paymentsManagement,
@@ -436,14 +530,20 @@ class _AdminPaymentsScreenState extends ConsumerState<AdminPaymentsScreen>
 class _PendingTabBody extends StatelessWidget {
   final AsyncValue<List<ContributionModel>> paymentsAsync;
   final String adminId;
+  final bool isSuperAdmin;
   final Future<void> Function(ContributionModel, String) onValidate;
   final Future<void> Function(ContributionModel, String) onReject;
+  final Future<void> Function(ContributionModel) onCheckMoMo;
+  final Future<void> Function(ContributionModel, String) onCancelMoMo;
 
   const _PendingTabBody({
     required this.paymentsAsync,
     required this.adminId,
+    required this.isSuperAdmin,
     required this.onValidate,
     required this.onReject,
+    required this.onCheckMoMo,
+    required this.onCancelMoMo,
   });
 
   @override
@@ -466,8 +566,11 @@ class _PendingTabBody extends StatelessWidget {
           itemBuilder: (_, i) => _PendingPaymentCard(
             contribution: payments[i],
             adminId: adminId,
+            isSuperAdmin: isSuperAdmin,
             onValidate: onValidate,
             onReject: onReject,
+            onCheckMoMo: onCheckMoMo,
+            onCancelMoMo: onCancelMoMo,
           ),
         );
       },
@@ -548,21 +651,31 @@ class _RejectedTabBody extends StatelessWidget {
 class _PendingPaymentCard extends StatelessWidget {
   final ContributionModel contribution;
   final String adminId;
+  final bool isSuperAdmin;
   final Future<void> Function(ContributionModel, String) onValidate;
   final Future<void> Function(ContributionModel, String) onReject;
+  final Future<void> Function(ContributionModel) onCheckMoMo;
+  final Future<void> Function(ContributionModel, String) onCancelMoMo;
 
   const _PendingPaymentCard({
     required this.contribution,
     required this.adminId,
+    required this.isSuperAdmin,
     required this.onValidate,
     required this.onReject,
+    required this.onCheckMoMo,
+    required this.onCancelMoMo,
   });
 
   @override
   Widget build(BuildContext context) {
+    final l = AppLocalizations.of(context);
     final c = contribution;
+    final isBank = c.isBankTransfer;
+    final isMobileMoney = c.isMobileMoney;
     final isStep2 = c.validatedBy != null && c.secondValidatorId == null;
-    final stepLabel = isStep2 ? '2ème validation' : '1ère validation';
+    final stepLabel =
+        isStep2 ? l.secondValidationShort : l.firstValidationShort;
     final stepColor = isStep2 ? AppColors.info : AppColors.warning;
 
     return Container(
@@ -609,26 +722,51 @@ class _PendingPaymentCard extends StatelessWidget {
                               overflow: TextOverflow.ellipsis,
                             ),
                           ),
-                          // Step badge
-                          Container(
-                            padding: const EdgeInsets.symmetric(
-                                horizontal: 8, vertical: 3),
-                            decoration: BoxDecoration(
-                              color: stepColor.withValues(alpha: 0.12),
-                              borderRadius: BorderRadius.circular(
-                                  AppConstants.radiusFull),
-                              border: Border.all(
-                                  color: stepColor.withValues(alpha: 0.4)),
-                            ),
-                            child: Text(
-                              stepLabel,
-                              style: GoogleFonts.plusJakartaSans(
-                                fontSize: 10,
-                                fontWeight: FontWeight.w700,
-                                color: stepColor,
+                          // Mobile money: "awaiting PIN" badge.
+                          // Cash: dual-validation step badge.
+                          // Bank: no badge (single-step).
+                          if (isMobileMoney)
+                            Container(
+                              padding: const EdgeInsets.symmetric(
+                                  horizontal: 8, vertical: 3),
+                              decoration: BoxDecoration(
+                                color: AppColors.warning
+                                    .withValues(alpha: 0.12),
+                                borderRadius: BorderRadius.circular(
+                                    AppConstants.radiusFull),
+                                border: Border.all(
+                                    color: AppColors.warning
+                                        .withValues(alpha: 0.4)),
+                              ),
+                              child: Text(
+                                l.awaitingPin,
+                                style: GoogleFonts.plusJakartaSans(
+                                  fontSize: 10,
+                                  fontWeight: FontWeight.w700,
+                                  color: AppColors.warning,
+                                ),
+                              ),
+                            )
+                          else if (!isBank)
+                            Container(
+                              padding: const EdgeInsets.symmetric(
+                                  horizontal: 8, vertical: 3),
+                              decoration: BoxDecoration(
+                                color: stepColor.withValues(alpha: 0.12),
+                                borderRadius: BorderRadius.circular(
+                                    AppConstants.radiusFull),
+                                border: Border.all(
+                                    color: stepColor.withValues(alpha: 0.4)),
+                              ),
+                              child: Text(
+                                stepLabel,
+                                style: GoogleFonts.plusJakartaSans(
+                                  fontSize: 10,
+                                  fontWeight: FontWeight.w700,
+                                  color: stepColor,
+                                ),
                               ),
                             ),
-                          ),
                         ],
                       ),
                       const SizedBox(height: 3),
@@ -640,19 +778,39 @@ class _PendingPaymentCard extends StatelessWidget {
                           color: AppColors.primary,
                         ),
                       ),
+                      if (isMobileMoney && c.payerPhone != null) ...[
+                        const SizedBox(height: 3),
+                        Row(
+                          children: [
+                            const Icon(Icons.smartphone_rounded,
+                                size: 12, color: AppColors.textGray),
+                            const SizedBox(width: 4),
+                            Text(
+                              c.payerPhone!,
+                              style: GoogleFonts.plusJakartaSans(
+                                  fontSize: 11,
+                                  color: AppColors.textGray),
+                            ),
+                          ],
+                        ),
+                      ],
                       const SizedBox(height: 6),
                       Row(
                         children: [
                           _MethodBadge(method: c.paymentMethod),
                           const SizedBox(
                               width: AppConstants.spaceSM),
-                          Text(
-                            _formatPeriod(c.period),
-                            style: GoogleFonts.plusJakartaSans(
-                                fontSize: 11,
-                                color: AppColors.textGray),
+                          Expanded(
+                            child: Text(
+                              _formatPeriod(c.period),
+                              style: GoogleFonts.plusJakartaSans(
+                                  fontSize: 11,
+                                  color: AppColors.textGray),
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                            ),
                           ),
-                          const Spacer(),
+                          const SizedBox(width: AppConstants.spaceSM),
                           Text(
                             AppUtils.formatAmount(c.amount),
                             style: GoogleFonts.plusJakartaSans(
@@ -665,7 +823,7 @@ class _PendingPaymentCard extends StatelessWidget {
                       ),
                       const SizedBox(height: 4),
                       Text(
-                        _formatDateTime(c.createdAt.toDate()),
+                        _formatDateTime(c.createdAt.toDate(), Localizations.localeOf(context).languageCode),
                         style: GoogleFonts.plusJakartaSans(
                             fontSize: 11,
                             color: AppColors.textGray),
@@ -676,42 +834,98 @@ class _PendingPaymentCard extends StatelessWidget {
               ],
             ),
           ),
+          // ── Proof of transfer (bank transfers)
+          if (c.proofUrl != null) ...[
+            const Divider(height: 1, color: AppColors.border),
+            Padding(
+              padding: const EdgeInsets.all(AppConstants.spaceMD),
+              child: _ProofThumbnail(url: c.proofUrl!, label: l.proofOfTransfer),
+            ),
+          ],
           // ── Divider
           const Divider(height: 1, color: AppColors.border),
-          // ── Action buttons
-          Padding(
-            padding: const EdgeInsets.symmetric(
-                horizontal: AppConstants.spaceMD,
-                vertical: AppConstants.spaceSM),
-            child: Row(
-              children: [
-                // Reject
-                Expanded(
-                  child: _ActionBtn(
-                    label: AppLocalizations.of(context).reject,
-                    icon: Icons.close_rounded,
-                    color: AppColors.error,
-                    outlined: true,
-                    onTap: () => onReject(c, adminId),
+          // ── Action buttons (super_admin only; admins are view-only)
+          if (isSuperAdmin)
+            Padding(
+              padding: const EdgeInsets.symmetric(
+                  horizontal: AppConstants.spaceMD,
+                  vertical: AppConstants.spaceSM),
+              child: isMobileMoney
+                  // Mobile money: refresh status + cancel (no manual approval).
+                  ? Row(
+                      children: [
+                        Expanded(
+                          child: _ActionBtn(
+                            label: AppLocalizations.of(context).refreshStatus,
+                            icon: Icons.refresh_rounded,
+                            color: AppColors.primary,
+                            outlined: true,
+                            onTap: () => onCheckMoMo(c),
+                          ),
+                        ),
+                        const SizedBox(width: AppConstants.spaceSM),
+                        Expanded(
+                          child: _ActionBtn(
+                            label: AppLocalizations.of(context)
+                                .cancelMobilePayment,
+                            icon: Icons.cancel_outlined,
+                            color: AppColors.error,
+                            outlined: true,
+                            onTap: () => onCancelMoMo(c, adminId),
+                          ),
+                        ),
+                      ],
+                    )
+                  // Cash / bank: dual-validation or single-step approval.
+                  : Row(
+                      children: [
+                        Expanded(
+                          child: _ActionBtn(
+                            label: AppLocalizations.of(context).reject,
+                            icon: Icons.close_rounded,
+                            color: AppColors.error,
+                            outlined: true,
+                            onTap: () => onReject(c, adminId),
+                          ),
+                        ),
+                        const SizedBox(width: AppConstants.spaceSM),
+                        Expanded(
+                          flex: 2,
+                          child: _ActionBtn(
+                            label: isBank
+                                ? AppLocalizations.of(context).approvePayment
+                                : (isStep2
+                                    ? AppLocalizations.of(context).confirm
+                                    : AppLocalizations.of(context).validate),
+                            icon: Icons.check_rounded,
+                            color: AppColors.success,
+                            outlined: false,
+                            onTap: () => onValidate(c, adminId),
+                          ),
+                        ),
+                      ],
+                    ),
+            )
+          else
+            Padding(
+              padding: const EdgeInsets.symmetric(
+                  horizontal: AppConstants.spaceMD,
+                  vertical: AppConstants.spaceMD),
+              child: Row(
+                children: [
+                  const Icon(Icons.lock_outline_rounded,
+                      size: 14, color: AppColors.textGray),
+                  const SizedBox(width: AppConstants.spaceSM),
+                  Expanded(
+                    child: Text(
+                      AppLocalizations.of(context).superAdminOnly,
+                      style: GoogleFonts.plusJakartaSans(
+                          fontSize: 11, color: AppColors.textGray),
+                    ),
                   ),
-                ),
-                const SizedBox(width: AppConstants.spaceSM),
-                // Validate / Confirm
-                Expanded(
-                  flex: 2,
-                  child: _ActionBtn(
-                    label: isStep2
-                        ? AppLocalizations.of(context).confirm
-                        : AppLocalizations.of(context).validate,
-                    icon: Icons.check_rounded,
-                    color: AppColors.success,
-                    outlined: false,
-                    onTap: () => onValidate(c, adminId),
-                  ),
-                ),
-              ],
+                ],
+              ),
             ),
-          ),
         ],
       ),
     );
@@ -726,8 +940,9 @@ class _CompactPaymentCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final l = AppLocalizations.of(context);
     final c = contribution;
-    final (statusColor, statusLabel) = _statusInfo(c.status);
+    final (statusColor, statusLabel) = _statusInfo(c.status, l);
 
     return GestureDetector(
       onTap: () => _showDetail(context, c),
@@ -817,7 +1032,7 @@ class _CompactPaymentCard extends StatelessWidget {
                   Row(
                     children: [
                       Text(
-                        _formatDateTime(c.createdAt.toDate()),
+                        _formatDateTime(c.createdAt.toDate(), Localizations.localeOf(context).languageCode),
                         style: GoogleFonts.plusJakartaSans(
                             fontSize: 11,
                             color: AppColors.textGray),
@@ -873,7 +1088,7 @@ class _PaymentDetailSheet extends StatelessWidget {
   Widget build(BuildContext context) {
     final c = contribution;
     final l = AppLocalizations.of(context);
-    final (statusColor, statusLabel) = _statusInfo(c.status);
+    final (statusColor, statusLabel) = _statusInfo(c.status, l);
 
     return DraggableScrollableSheet(
       initialChildSize: 0.7,
@@ -1005,7 +1220,7 @@ class _PaymentDetailSheet extends StatelessWidget {
                               CrossAxisAlignment.end,
                           children: [
                             Text(
-                              _methodLabel(c.paymentMethod),
+                              _methodLabel(c.paymentMethod, l),
                               style: GoogleFonts.plusJakartaSans(
                                   fontSize: 13,
                                   fontWeight: FontWeight.w600,
@@ -1036,14 +1251,14 @@ class _PaymentDetailSheet extends StatelessWidget {
                   _DetailRow(
                     icon: Icons.calendar_today_outlined,
                     label: l.submissionDate,
-                    value: _formatDateTime(c.createdAt.toDate()),
+                    value: _formatDateTime(c.createdAt.toDate(), Localizations.localeOf(context).languageCode),
                   ),
                   if (c.confirmedAt != null)
                     _DetailRow(
                       icon: Icons.check_circle_outline_rounded,
                       label: l.confirmedOn,
-                      value: _formatDateTime(
-                          c.confirmedAt!.toDate()),
+                      value: _formatDateTime(c.confirmedAt!.toDate(),
+                          Localizations.localeOf(context).languageCode),
                       valueColor: AppColors.success,
                     ),
                   if (c.isFailed &&
@@ -1055,6 +1270,14 @@ class _PaymentDetailSheet extends StatelessWidget {
                       value: c.notes!,
                       valueColor: AppColors.error,
                     ),
+
+                  // ── Proof of transfer
+                  if (c.proofUrl != null) ...[
+                    const SizedBox(height: AppConstants.spaceSM),
+                    _ProofThumbnail(
+                        url: c.proofUrl!, label: l.proofOfTransfer),
+                    const SizedBox(height: AppConstants.spaceSM),
+                  ],
 
                   // ── Validation trace
                   if (c.validationRequired) ...[
@@ -1189,7 +1412,8 @@ class _MethodBadge extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final (color, label) = _methodInfo(method);
+    final l = AppLocalizations.of(context);
+    final (color, label) = _methodInfo(method, l);
     return Container(
       padding:
           const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
@@ -1385,6 +1609,115 @@ class _ValidationStep extends StatelessWidget {
   }
 }
 
+class _ProofThumbnail extends StatelessWidget {
+  final String url;
+  final String label;
+  const _ProofThumbnail({required this.url, required this.label});
+
+  void _open(BuildContext context) {
+    Navigator.of(context).push(
+      PageRouteBuilder(
+        opaque: false,
+        barrierColor: Colors.black,
+        pageBuilder: (_, __, ___) => _ProofViewer(url: url),
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return GestureDetector(
+      onTap: () => _open(context),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              const Icon(Icons.image_outlined,
+                  size: 16, color: AppColors.primary),
+              const SizedBox(width: AppConstants.spaceSM),
+              Text(
+                label,
+                style: GoogleFonts.plusJakartaSans(
+                  fontSize: 10,
+                  fontWeight: FontWeight.w600,
+                  color: AppColors.textGray,
+                  letterSpacing: 0.4,
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: AppConstants.spaceSM),
+          ClipRRect(
+            borderRadius: BorderRadius.circular(AppConstants.radiusMD),
+            child: Image.network(
+              url,
+              height: 160,
+              width: double.infinity,
+              fit: BoxFit.cover,
+              loadingBuilder: (ctx, child, progress) => progress == null
+                  ? child
+                  : Container(
+                      height: 160,
+                      color: AppColors.bg,
+                      child: const Center(
+                          child: CircularProgressIndicator(strokeWidth: 2)),
+                    ),
+              errorBuilder: (ctx, _, __) => Container(
+                height: 160,
+                color: AppColors.bg,
+                alignment: Alignment.center,
+                child: const Icon(Icons.broken_image_outlined,
+                    color: AppColors.textGray),
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _ProofViewer extends StatelessWidget {
+  final String url;
+  const _ProofViewer({required this.url});
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      backgroundColor: Colors.transparent,
+      body: Stack(
+        children: [
+          Positioned.fill(
+            child: InteractiveViewer(
+              minScale: 0.5,
+              maxScale: 4,
+              child: Center(
+                child: Image.network(
+                  url,
+                  fit: BoxFit.contain,
+                  errorBuilder: (ctx, _, __) => const Icon(
+                      Icons.broken_image_outlined,
+                      color: Colors.white,
+                      size: 48),
+                ),
+              ),
+            ),
+          ),
+          Positioned(
+            top: MediaQuery.of(context).padding.top + 8,
+            right: 8,
+            child: IconButton(
+              onPressed: () => Navigator.of(context).pop(),
+              icon: const Icon(Icons.close_rounded, color: Colors.white),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
 class _EmptyState extends StatelessWidget {
   final IconData icon;
   final String message;
@@ -1430,44 +1763,44 @@ String _formatPeriod(String period) {
   return period;
 }
 
-String _formatDateTime(DateTime dt) {
-  return DateFormat('d MMM yyyy · HH:mm', 'fr_FR').format(dt);
+String _formatDateTime(DateTime dt, String localeCode) {
+  return DateFormat('d MMM yyyy · HH:mm', localeCode).format(dt);
 }
 
-String _methodLabel(String method) {
+String _methodLabel(String method, AppLocalizations l) {
   switch (method) {
     case AppConstants.paymentMtnMomo:
       return 'MTN MoMo';
     case AppConstants.paymentOrangeMoney:
       return 'Orange Money';
     case AppConstants.paymentCash:
-      return 'Espèces';
+      return l.cash;
     default:
-      return 'Virement';
+      return l.bankTransfer;
   }
 }
 
-(Color, String) _methodInfo(String method) {
+(Color, String) _methodInfo(String method, AppLocalizations l) {
   switch (method) {
     case AppConstants.paymentMtnMomo:
       return (const Color(0xFFFFCC00), 'MTN');
     case AppConstants.paymentOrangeMoney:
       return (Colors.deepOrange, 'Orange');
     case AppConstants.paymentCash:
-      return (AppColors.success, 'Espèces');
+      return (AppColors.success, l.cash);
     default:
-      return (AppColors.info, 'Virement');
+      return (AppColors.info, l.bankTransfer);
   }
 }
 
-(Color, String) _statusInfo(String status) {
+(Color, String) _statusInfo(String status, AppLocalizations l) {
   switch (status) {
     case AppConstants.statusConfirmed:
-      return (AppColors.success, 'Confirmé');
+      return (AppColors.success, l.confirmed);
     case AppConstants.statusFailed:
-      return (AppColors.error, 'Rejeté');
+      return (AppColors.error, l.rejectedStatus);
     default:
-      return (AppColors.warning, 'En attente');
+      return (AppColors.warning, l.pending);
   }
 }
 

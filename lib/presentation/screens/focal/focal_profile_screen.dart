@@ -281,6 +281,24 @@ class _FocalProfileScreenState
                   ),
                   const SizedBox(height: AppConstants.spaceLG),
 
+                  // ── Support links ───────────────────────────
+                  _InfoCard(
+                    children: [
+                      _ActionTile(
+                        icon: Icons.help_outline_rounded,
+                        label: l.helpFaq,
+                        onTap: () => context.push(AppRoutes.help),
+                      ),
+                      const Divider(height: 1, color: AppColors.border),
+                      _ActionTile(
+                        icon: Icons.info_outline_rounded,
+                        label: l.aboutApp,
+                        onTap: () => context.push(AppRoutes.about),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: AppConstants.spaceLG),
+
                   // Sign out
                   SizedBox(
                     height: 50,
@@ -378,6 +396,49 @@ class _InfoRow extends StatelessWidget {
             ),
           ),
         ],
+      ),
+    );
+  }
+}
+
+// ── Action tile (tappable) ────────────────────────────────────
+
+class _ActionTile extends StatelessWidget {
+  final IconData icon;
+  final String label;
+  final VoidCallback onTap;
+
+  const _ActionTile({
+    required this.icon,
+    required this.label,
+    required this.onTap,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return InkWell(
+      onTap: onTap,
+      borderRadius: BorderRadius.circular(AppConstants.radiusLG),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(
+          horizontal: AppConstants.spaceMD,
+          vertical: AppConstants.spaceMD,
+        ),
+        child: Row(
+          children: [
+            Icon(icon, size: 18, color: _focalLight),
+            const SizedBox(width: AppConstants.spaceMD),
+            Expanded(
+              child: Text(
+                label,
+                style: GoogleFonts.plusJakartaSans(
+                    fontSize: 13, color: AppColors.textGray),
+              ),
+            ),
+            const Icon(Icons.chevron_right_rounded,
+                color: AppColors.textLight, size: 18),
+          ],
+        ),
       ),
     );
   }

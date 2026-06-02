@@ -2,6 +2,7 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../core/constants/app_constants.dart';
+import '../../../data/models/contribution_model.dart';
 import '../../../data/models/focal_report_model.dart';
 import '../../../data/models/user_model.dart';
 import '../../../data/repositories/focal_report_repository.dart';
@@ -41,7 +42,7 @@ final focalMonthCollectedProvider =
     return snap.docs
         .where((doc) {
           final data = doc.data();
-          if (data['status'] != 'confirmed') return false;
+          if (data['status'] != AppConstants.statusConfirmed) return false;
           final ts = data['createdAt'];
           if (ts == null) return false;
           final d = (ts as dynamic).toDate() as DateTime;
@@ -49,6 +50,65 @@ final focalMonthCollectedProvider =
         })
         .fold<int>(
             0, (acc, doc) => acc + ((doc.data()['amount'] as num?)?.toInt() ?? 0));
+  }),
+);
+
+/// Today's confirmed contributions recorded by a focal officer.
+/// Returns (amountToday, countToday).
+final focalTodayContribProvider =
+    StreamProvider.autoDispose.family<(int, int), String>(
+  (ref, focalId) {
+    final now = DateTime.now();
+    final startOfDay = DateTime(now.year, now.month, now.day);
+    final tsStart = Timestamp.fromDate(startOfDay);
+    return FirebaseFirestore.instance
+        .collection(AppConstants.contributionsCollection)
+        .where('recordedBy', isEqualTo: focalId)
+        .where('createdAt', isGreaterThanOrEqualTo: tsStart)
+        .snapshots()
+        .map((snap) {
+      final confirmed = snap.docs.where(
+          (d) => d.data()['status'] == AppConstants.statusConfirmed);
+      final amount = confirmed.fold<int>(
+          0,
+          (s, d) =>
+              s + ((d.data()['amount'] as num?)?.toInt() ?? 0));
+      return (amount, snap.size);
+    });
+  },
+);
+
+/// New members registered today by a focal officer.
+final focalTodayMembersProvider =
+    StreamProvider.autoDispose.family<int, String>(
+  (ref, focalId) {
+    final now = DateTime.now();
+    final startOfDay = DateTime(now.year, now.month, now.day);
+    final tsStart = Timestamp.fromDate(startOfDay);
+    return FirebaseFirestore.instance
+        .collection(AppConstants.usersCollection)
+        .where('registeredByFocalId', isEqualTo: focalId)
+        .where('createdAt', isGreaterThanOrEqualTo: tsStart)
+        .snapshots()
+        .map((snap) => snap.size);
+  },
+);
+
+/// All contributions recorded by a focal officer, newest first.
+/// Sorted client-side to avoid requiring a composite index and to keep
+/// reads serving from cache when offline.
+final focalRecentPaymentsProvider =
+    StreamProvider.autoDispose.family<List<ContributionModel>, String>(
+  (ref, focalId) => FirebaseFirestore.instance
+      .collection(AppConstants.contributionsCollection)
+      .where('recordedBy', isEqualTo: focalId)
+      .snapshots()
+      .map((snap) {
+    final list = snap.docs
+        .map((doc) => ContributionModel.fromFirestore(doc))
+        .toList();
+    list.sort((a, b) => b.createdAt.compareTo(a.createdAt));
+    return list;
   }),
 );
 

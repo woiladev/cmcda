@@ -37,5 +37,17 @@ service firebase.storage {
                    && request.resource.size < 10 * 1024 * 1024;
       allow delete: if request.auth != null && request.auth.uid == focalId;
     }
+
+    // ── Event Cover Images ───────────────────────────────────────────────
+    // Any authenticated user reads; admins upload (role enforced at app/Firestore
+    // layer — Storage rules cannot read Firestore roles).
+
+    match /events/{uid}/{fileName} {
+      allow read:  if request.auth != null;
+      allow write: if request.auth != null
+                   && request.resource.size < 5 * 1024 * 1024
+                   && request.resource.contentType.matches('image/.*');
+      allow delete: if request.auth != null;
+    }
   }
 }

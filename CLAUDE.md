@@ -124,27 +124,50 @@ Collections (constants in `AppConstants`):
 | `notifications` | Per-user notification inbox |
 | `audit_logs` | Write-only from Cloud Functions (app cannot write) |
 | `counters` | Auto-incrementing counters — `members` and `receipts` |
+| `app_config` | Org-wide config — `bank_details` doc (CMCDA bank account shown to members for transfers), super-admin-editable |
 
-Counters use Firestore transactions with `SetOptions(merge: true)` — the docs are created on first write.
+Counters use `SetOptions(merge: true)` — the docs are created on first write. The `receipts` counter is incremented **server-side only** (by the `onContributionCreated` Cloud Function, in a transaction) so that contributions can be created offline; clients never touch it. `members` is the matricule sequence (see `AuthRepository`).
 
 ### Payment flow
 
 Cash and bank transfers (`isCashOrBank = true`) are created with `status = 'pending'` and `validationRequired = true`. Mobile money is auto-confirmed (`status = 'confirmed'`).
 
-Manual validation is a two-step dual-approval:
+**Bank transfers (member-initiated)** use a single-step approval. The member sees the CMCDA bank details (from `app_config/bank_details`, falling back to `AppConstants.bankName`/`bankAccount`), uploads a **required** proof-of-transfer image (stored at `receipts/{uid}/...` via `ContributionRepository.uploadProof`, which uses `putData` for Web compatibility — `proofUrl` is saved on the contribution), then confirms. A super admin reviews the proof and calls `confirmContribution(id, adminId)` → sets `validatedBy`, `status = confirmed`, `confirmedAt`, and credits totals in one step. Super admins edit the bank details via the admin settings → bank-details screen (`AppRoutes.adminBankDetails`).
+
+**Cash** still uses two-step dual-approval:
 1. First admin calls `validatePayment(id, adminId)` → sets `validatedBy`.
 2. Second admin calls `secondValidatePayment(id, adminId)` → sets `secondValidatorId`, `status = confirmed`, `confirmedAt`.
 
-Either admin can call `rejectPayment(id, adminId, reason)` to set `status = failed`.
+Either flow: an admin can call `rejectPayment(id, adminId, reason)` to set `status = failed`.
+
+The member's "payment confirmed"/"rejected" push is sent **server-side** by the `onContributionConfirmed` Cloud Function (writes a `notifications` doc on status change) → `onNotificationCreate` (sends FCM). Redeploy functions after changing this code, or the push won't fire.
+
+Receipt numbers (`RCP-000001`) are assigned **server-side** by `onContributionCreated`. Contributions are created with an empty `receiptNumber`; the trigger fills it in atomically when the doc arrives (online or synced from offline). UI that shows a receipt must tolerate an empty value (`receiptNumber.isNotEmpty ? ... : '—'`) — the member payment success screen watches the doc via `ContributionRepository.streamContribution(id)` and reveals the number once assigned.
+
+### Offline support & sync
+
+The app is offline-first via Firestore's local cache, enabled in `main.dart` (`Settings(persistenceEnabled: true, cacheSizeBytes: CACHE_SIZE_UNLIMITED)`, set before any Firestore use — works on Android and Web). All reads serve from cache when offline; writes queue locally and sync on reconnect. Primary field case: a focal officer recording cash payments with no signal.
+
+Key rules when touching write paths:
+
+- **Never `await` a Firestore write you need to return from while offline.** `set()`/`update()`/`add()` Futures only complete on server ack, which never happens offline — awaiting hangs the UI. Use `unawaited(...)` (import `dart:async`) and generate the doc id locally with `_col.doc()` so the model can be returned immediately. See `ContributionRepository.createContribution` and `FocalReportRepository.createReport`.
+- **No client-side `runTransaction` on the write path** — transactions require a server round-trip and fail offline. That's why receipt numbering moved to `onContributionCreated`.
+- Reads via `.get()` fall back to cache offline automatically; streams (`.snapshots()`) replay from cache. No change needed.
+- **Storage uploads do NOT queue offline** — `ContributionRepository.uploadProof` (bank-transfer proof image) requires a connection. Cash + mobile-money creation work fully offline; bank transfers don't.
+
+Connectivity UX: `connectivity_plus` feeds `connectivityProvider` (`lib/core/services/connectivity_service.dart`); `ConnectivityBanner` (wired into the `MaterialApp.router` builder in `main.dart`) shows a bottom strip — "offline" → "syncing…" (`FirebaseFirestore.instance.waitForPendingWrites()`) → "synced". Strings: `offlineBannerMessage` / `syncingMessage` / `syncedMessage` / `receiptPendingSync` (fr/en/ar).
 
 ### Firestore security rules
 
 Rules are in `firestore.rules` and deployed via Firebase CLI. Role is read from the caller's own `users/{uid}` doc using the `role()` helper function. Key constraints:
 
-- Members can only self-update `fcmToken`, `language`, `preferredPayment`, `preferredFrequency`, `avatarUrl`, `updatedAt`.
+- Members can only self-update `fcmTokens`, `language`, `preferredPayment`, `preferredFrequency`, `avatarUrl`, `updatedAt`.
 - Admins can only update contributions' `status`, `validatedBy`, `secondValidatorId`, `confirmedAt`, `notes`, `focalReportId`.
 - Focal officers can only move their own reports from `draft` → `submitted`.
 - `audit_logs` writes are blocked from the client (`allow write: if false`).
+- `app_config` is readable by any authenticated user; writes are super-admin only.
+
+Proof-of-transfer images live under `receipts/{userId}/` in Storage (`storage.rules`): owner + staff read, authenticated write (≤5 MB).
 
 ### Composite Firestore indexes
 

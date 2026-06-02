@@ -1,4 +1,6 @@
-﻿import 'package:cloud_firestore/cloud_firestore.dart';
+﻿import 'dart:async';
+
+import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -14,6 +16,7 @@ import '../../../data/models/contribution_model.dart';
 import '../../../data/models/user_model.dart';
 import '../../../data/repositories/contribution_repository.dart';
 import 'focal_providers.dart';
+import 'focal_pawapay_sheet.dart';
 import '../../widgets/common/payment_method_icon.dart';
 import '../../widgets/common/super_badge_avatar.dart';
 
@@ -1237,13 +1240,74 @@ class _RecordPaymentSheet extends StatefulWidget {
 class _RecordPaymentSheetState
     extends State<_RecordPaymentSheet> {
   final _repo = ContributionRepository();
+  final _customCtrl = TextEditingController();
   int? _selectedAmount;
+  bool _customMode = false;
   String _selectedPeriodType = AppConstants.periodMonthly;
   String _selectedMethod = AppConstants.paymentCash;
   bool _loading = false;
 
-  Future<void> _submit() async {
-    if (_selectedAmount == null) return;
+  @override
+  void dispose() {
+    _customCtrl.dispose();
+    super.dispose();
+  }
+
+  int get _amount => _customMode
+      ? (int.tryParse(_customCtrl.text.trim()) ?? 0)
+      : (_selectedAmount ?? 0);
+
+  String get _periodType =>
+      _customMode ? AppConstants.periodCustom : _selectedPeriodType;
+
+  bool get _isMomo =>
+      _selectedMethod == AppConstants.paymentMtnMomo ||
+      _selectedMethod == AppConstants.paymentOrangeMoney;
+
+  bool get _canSubmit => _amount > 0;
+
+  void _onConfirm() {
+    if (!_canSubmit || _loading) return;
+    if (_isMomo) {
+      _startMomoCharge();
+    } else {
+      _recordCash();
+    }
+  }
+
+  // Mobile money: trigger a real pawaPay PIN prompt on the member's phone. The
+  // deposit is initiated server-side on the member's behalf; this sheet only
+  // closes once the deposit confirms.
+  Future<void> _startMomoCharge() async {
+    final nav = Navigator.of(context);
+    final messenger = ScaffoldMessenger.of(context);
+    final l = AppLocalizations.of(context);
+    final confirmed = await showModalBottomSheet<bool>(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      builder: (_) => Center(
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 520),
+          child: FocalPawaPaySheet(
+            member: widget.member,
+            amount: _amount,
+            periodType: _periodType,
+            isMtn: _selectedMethod == AppConstants.paymentMtnMomo,
+          ),
+        ),
+      ),
+    );
+    if (confirmed == true && mounted) {
+      nav.pop();
+      messenger.showSnackBar(SnackBar(
+        content: Text(l.paymentRecorded),
+        backgroundColor: AppColors.success,
+      ));
+    }
+  }
+
+  Future<void> _recordCash() async {
     setState(() => _loading = true);
     final l = AppLocalizations.of(context);
     final nav = Navigator.of(context);
@@ -1254,8 +1318,8 @@ class _RecordPaymentSheetState
         memberId: widget.member.id,
         memberName: widget.member.fullName,
         memberNumber: widget.member.memberNumber,
-        amount: _selectedAmount!,
-        periodType: _selectedPeriodType,
+        amount: _amount,
+        periodType: _periodType,
         paymentMethod: _selectedMethod,
         recordedBy: widget.focalId,
       );
@@ -1377,15 +1441,56 @@ class _RecordPaymentSheetState
                         _AmountChip(
                           amount: amount,
                           period: period,
-                          selected: _selectedAmount == amount,
+                          selected: !_customMode && _selectedAmount == amount,
                           onTap: () => setState(() {
+                            _customMode = false;
                             _selectedAmount = amount;
                             _selectedPeriodType = period;
                           }),
                           l: l,
                         ),
+                      _CustomChip(
+                        label: l.custom,
+                        selected: _customMode,
+                        onTap: () => setState(() => _customMode = true),
+                      ),
                     ],
                   ),
+                  if (_customMode) ...[
+                    const SizedBox(height: AppConstants.spaceSM),
+                    TextField(
+                      controller: _customCtrl,
+                      keyboardType: TextInputType.number,
+                      autofocus: true,
+                      inputFormatters: [
+                        FilteringTextInputFormatter.digitsOnly
+                      ],
+                      onChanged: (_) => setState(() {}),
+                      decoration: InputDecoration(
+                        hintText: '${l.amount} (FCFA)',
+                        prefixIcon: const Icon(Icons.payments_outlined,
+                            color: AppColors.textGray, size: 18),
+                        filled: true,
+                        fillColor: AppColors.bg,
+                        border: OutlineInputBorder(
+                          borderRadius:
+                              BorderRadius.circular(AppConstants.radiusMD),
+                          borderSide: const BorderSide(color: AppColors.border),
+                        ),
+                        enabledBorder: OutlineInputBorder(
+                          borderRadius:
+                              BorderRadius.circular(AppConstants.radiusMD),
+                          borderSide: const BorderSide(color: AppColors.border),
+                        ),
+                        focusedBorder: OutlineInputBorder(
+                          borderRadius:
+                              BorderRadius.circular(AppConstants.radiusMD),
+                          borderSide:
+                              const BorderSide(color: _focalLight, width: 1.5),
+                        ),
+                      ),
+                    ),
+                  ],
                   const SizedBox(height: AppConstants.spaceLG),
                   // Payment method
                   Text(
@@ -1409,8 +1514,8 @@ class _RecordPaymentSheetState
                   SizedBox(
                     height: 52,
                     child: ElevatedButton(
-                      onPressed: (_selectedAmount != null && !_loading)
-                          ? _submit
+                      onPressed: (_canSubmit && !_loading)
+                          ? _onConfirm
                           : null,
                       style: ElevatedButton.styleFrom(
                         backgroundColor: AppColors.success,
@@ -1500,6 +1605,54 @@ class _AmountChip extends StatelessWidget {
                 color: selected
                     ? Colors.white.withValues(alpha: 0.85)
                     : AppColors.textGray,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _CustomChip extends StatelessWidget {
+  final String label;
+  final bool selected;
+  final VoidCallback onTap;
+
+  const _CustomChip({
+    required this.label,
+    required this.selected,
+    required this.onTap,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return GestureDetector(
+      onTap: onTap,
+      child: AnimatedContainer(
+        duration: const Duration(milliseconds: 150),
+        padding: const EdgeInsets.symmetric(
+            horizontal: AppConstants.spaceMD, vertical: AppConstants.spaceSM),
+        decoration: BoxDecoration(
+          color: selected ? AppColors.success : AppColors.surface,
+          borderRadius: BorderRadius.circular(AppConstants.radiusMD),
+          border: Border.all(
+            color: selected ? AppColors.success : AppColors.border,
+          ),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(Icons.tune_rounded,
+                size: 15,
+                color: selected ? Colors.white : AppColors.textGray),
+            const SizedBox(width: 6),
+            Text(
+              label,
+              style: GoogleFonts.plusJakartaSans(
+                fontSize: 13,
+                fontWeight: FontWeight.w700,
+                color: selected ? Colors.white : AppColors.textDark,
               ),
             ),
           ],

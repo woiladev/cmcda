@@ -2,17 +2,18 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:go_router/go_router.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:intl/intl.dart';
 
 import '../../../core/constants/app_constants.dart';
+import '../../../core/constants/app_routes.dart';
 import '../../../core/l10n/app_localizations.dart';
 import '../../../core/services/language_service.dart';
 import '../../../core/services/router_service.dart';
 import '../../../core/theme/app_theme.dart';
 import '../../../data/models/user_model.dart';
 import '../../../data/repositories/auth_repository.dart';
-import '../../widgets/common/payment_method_icon.dart';
 
 // ── Providers ────────────────────────────────────────────────
 final _authRepo = AuthRepository();
@@ -76,8 +77,6 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen> {
                 _buildPersonalInfoSection(context, l, user),
                 const SizedBox(height: AppConstants.spaceLG),
                 _buildMembershipSection(context, l, user),
-                const SizedBox(height: AppConstants.spaceLG),
-                _buildPreferredPaymentSection(context, l, user),
                 const SizedBox(height: AppConstants.spaceLG),
                 _buildLanguageSection(context, l, user),
                 const SizedBox(height: AppConstants.spaceLG),
@@ -431,64 +430,68 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen> {
     );
   }
 
-  // ── Preferred payment section ────────────────────────────────
-
-  Widget _buildPreferredPaymentSection(BuildContext context, AppLocalizations l, UserModel user) {
-    final opts = _paymentOptions(l);
-    return _SectionCard(
-      title: l.paymentMethods,
-      child: Column(
-        children: [
-          for (int i = 0; i < opts.length; i++) ...[
-            _PaymentOptionRow(
-              methodKey: opts[i].key,
-              label: opts[i].label,
-              selected: user.preferredPayment == opts[i].key,
-              onTap: () => _changePreferredPayment(user, opts[i].key, l),
-            ),
-            if (i < opts.length - 1) _Divider(),
-          ],
-        ],
-      ),
-    );
-  }
-
-  List<_PaymentOpt> _paymentOptions(AppLocalizations l) => [
-    _PaymentOpt(key: AppConstants.paymentMtnMomo, label: l.mtnMomo),
-    _PaymentOpt(key: AppConstants.paymentOrangeMoney, label: l.orangeMoney),
-    _PaymentOpt(key: AppConstants.paymentCash, label: l.cash),
-    _PaymentOpt(key: AppConstants.paymentBankTransfer, label: l.bankTransfer),
-  ];
-
-  Future<void> _changePreferredPayment(UserModel user, String key, AppLocalizations l) async {
-    if (user.preferredPayment == key) return;
-    try {
-      await _authRepo.updateProfile(user.id, {'preferredPayment': key});
-    } catch (_) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text(l.error), backgroundColor: AppColors.error),
-        );
-      }
-    }
-  }
-
   // ── Language section ─────────────────────────────────────────
 
   Widget _buildLanguageSection(BuildContext context, AppLocalizations l, UserModel user) {
+    const langs = [
+      _LangOpt(code: 'fr', flag: '🇫🇷', label: 'Français'),
+      _LangOpt(code: 'en', flag: '🇬🇧', label: 'English'),
+      _LangOpt(code: 'ar', flag: '🇸🇦', label: 'عربي'),
+    ];
+    final current = langs.any((o) => o.code == user.language) ? user.language : 'fr';
+
     return _SectionCard(
       title: l.languageDisplay,
-      child: Row(
-        children: [
-          _LangPill(code: 'fr', flag: '🇫🇷', label: 'Français', active: user.language == 'fr',
-              onTap: () => _changeLanguage(user, 'fr')),
-          const SizedBox(width: AppConstants.spaceSM),
-          _LangPill(code: 'en', flag: '🇬🇧', label: 'English', active: user.language == 'en',
-              onTap: () => _changeLanguage(user, 'en')),
-          const SizedBox(width: AppConstants.spaceSM),
-          _LangPill(code: 'ar', flag: '🇸🇦', label: 'عربي', active: user.language == 'ar',
-              onTap: () => _changeLanguage(user, 'ar')),
-        ],
+      child: DropdownButtonHideUnderline(
+        child: DropdownButtonFormField<String>(
+          initialValue: current,
+          isExpanded: true,
+          icon: const Icon(Icons.keyboard_arrow_down_rounded, color: AppColors.textGray),
+          decoration: InputDecoration(
+            filled: true,
+            fillColor: AppColors.bg,
+            contentPadding: const EdgeInsets.symmetric(
+              horizontal: AppConstants.spaceMD,
+              vertical: 4,
+            ),
+            border: OutlineInputBorder(
+              borderRadius: BorderRadius.circular(AppConstants.radiusMD),
+              borderSide: const BorderSide(color: AppColors.border),
+            ),
+            enabledBorder: OutlineInputBorder(
+              borderRadius: BorderRadius.circular(AppConstants.radiusMD),
+              borderSide: const BorderSide(color: AppColors.border),
+            ),
+            focusedBorder: OutlineInputBorder(
+              borderRadius: BorderRadius.circular(AppConstants.radiusMD),
+              borderSide: const BorderSide(color: AppColors.primary, width: 2),
+            ),
+          ),
+          borderRadius: BorderRadius.circular(AppConstants.radiusMD),
+          items: [
+            for (final o in langs)
+              DropdownMenuItem<String>(
+                value: o.code,
+                child: Row(
+                  children: [
+                    Text(o.flag, style: const TextStyle(fontSize: 20)),
+                    const SizedBox(width: AppConstants.spaceMD),
+                    Text(
+                      o.label,
+                      style: GoogleFonts.plusJakartaSans(
+                        fontSize: 14,
+                        fontWeight: FontWeight.w500,
+                        color: AppColors.textDark,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+          ],
+          onChanged: (code) {
+            if (code != null) _changeLanguage(user, code);
+          },
+        ),
       ),
     );
   }
@@ -540,7 +543,40 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen> {
           ),
           _Divider(),
           GestureDetector(
-            onTap: () {},
+            onTap: () => context.push(AppRoutes.reminders),
+            behavior: HitTestBehavior.opaque,
+            child: Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                Row(
+                  children: [
+                    Container(
+                      width: 36,
+                      height: 36,
+                      decoration: BoxDecoration(
+                        color: AppColors.primary.withValues(alpha: 0.08),
+                        borderRadius: BorderRadius.circular(AppConstants.radiusSM),
+                      ),
+                      child: const Icon(Icons.alarm_rounded, color: AppColors.primary, size: 18),
+                    ),
+                    const SizedBox(width: AppConstants.spaceMD),
+                    Text(
+                      l.reminders,
+                      style: GoogleFonts.plusJakartaSans(
+                        fontSize: 15,
+                        color: AppColors.textDark,
+                      ),
+                    ),
+                  ],
+                ),
+                const Icon(Icons.chevron_right_rounded, color: AppColors.textGray),
+              ],
+            ),
+          ),
+          _Divider(),
+          GestureDetector(
+            onTap: () => context.push(AppRoutes.privacyPolicy),
+            behavior: HitTestBehavior.opaque,
             child: Row(
               mainAxisAlignment: MainAxisAlignment.spaceBetween,
               children: [
@@ -558,6 +594,70 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen> {
                     const SizedBox(width: AppConstants.spaceMD),
                     Text(
                       l.privacyPolicy,
+                      style: GoogleFonts.plusJakartaSans(
+                        fontSize: 15,
+                        color: AppColors.textDark,
+                      ),
+                    ),
+                  ],
+                ),
+                const Icon(Icons.chevron_right_rounded, color: AppColors.textGray),
+              ],
+            ),
+          ),
+          _Divider(),
+          GestureDetector(
+            onTap: () => context.push(AppRoutes.help),
+            behavior: HitTestBehavior.opaque,
+            child: Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                Row(
+                  children: [
+                    Container(
+                      width: 36,
+                      height: 36,
+                      decoration: BoxDecoration(
+                        color: AppColors.primary.withValues(alpha: 0.08),
+                        borderRadius: BorderRadius.circular(AppConstants.radiusSM),
+                      ),
+                      child: const Icon(Icons.help_outline_rounded, color: AppColors.primary, size: 18),
+                    ),
+                    const SizedBox(width: AppConstants.spaceMD),
+                    Text(
+                      l.helpFaq,
+                      style: GoogleFonts.plusJakartaSans(
+                        fontSize: 15,
+                        color: AppColors.textDark,
+                      ),
+                    ),
+                  ],
+                ),
+                const Icon(Icons.chevron_right_rounded, color: AppColors.textGray),
+              ],
+            ),
+          ),
+          _Divider(),
+          GestureDetector(
+            onTap: () => context.push(AppRoutes.about),
+            behavior: HitTestBehavior.opaque,
+            child: Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                Row(
+                  children: [
+                    Container(
+                      width: 36,
+                      height: 36,
+                      decoration: BoxDecoration(
+                        color: AppColors.primary.withValues(alpha: 0.08),
+                        borderRadius: BorderRadius.circular(AppConstants.radiusSM),
+                      ),
+                      child: const Icon(Icons.info_outline_rounded, color: AppColors.primary, size: 18),
+                    ),
+                    const SizedBox(width: AppConstants.spaceMD),
+                    Text(
+                      l.aboutApp,
                       style: GoogleFonts.plusJakartaSans(
                         fontSize: 15,
                         color: AppColors.textDark,
@@ -757,7 +857,8 @@ class _EditProfileSheetState extends ConsumerState<_EditProfileSheet> {
       ),
       child: Form(
         key: _formKey,
-        child: Column(
+        child: SingleChildScrollView(
+          child: Column(
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
@@ -888,6 +989,7 @@ class _EditProfileSheetState extends ConsumerState<_EditProfileSheet> {
             ),
           ],
         ),
+        ),
       ),
     );
   }
@@ -1012,125 +1114,11 @@ class _InfoRow extends StatelessWidget {
   }
 }
 
-class _PaymentOptionRow extends StatelessWidget {
-  final String methodKey;
-  final String label;
-  final bool selected;
-  final VoidCallback onTap;
-  const _PaymentOptionRow({
-    required this.methodKey,
-    required this.label,
-    required this.selected,
-    required this.onTap,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    return GestureDetector(
-      onTap: onTap,
-      behavior: HitTestBehavior.opaque,
-      child: Row(
-        children: [
-          Container(
-            width: 36,
-            height: 36,
-            decoration: BoxDecoration(
-              color: (selected ? AppColors.primary : AppColors.textGray).withValues(alpha: 0.1),
-              borderRadius: BorderRadius.circular(AppConstants.radiusSM),
-            ),
-            child: paymentMethodIcon(
-              methodKey,
-              size: 18,
-              color: selected ? AppColors.primary : AppColors.textGray,
-            ),
-          ),
-          const SizedBox(width: AppConstants.spaceMD),
-          Expanded(
-            child: Text(
-              label,
-              style: GoogleFonts.plusJakartaSans(
-                fontSize: 14,
-                fontWeight: FontWeight.w500,
-                color: selected ? AppColors.primary : AppColors.textDark,
-              ),
-            ),
-          ),
-          if (selected)
-            Container(
-              width: 20,
-              height: 20,
-              decoration: const BoxDecoration(
-                color: AppColors.primary,
-                shape: BoxShape.circle,
-              ),
-              child: const Icon(Icons.check_rounded, color: Colors.white, size: 13),
-            )
-          else
-            Container(
-              width: 20,
-              height: 20,
-              decoration: BoxDecoration(
-                shape: BoxShape.circle,
-                border: Border.all(color: AppColors.border, width: 1.5),
-              ),
-            ),
-        ],
-      ),
-    );
-  }
-}
-
-class _LangPill extends StatelessWidget {
+class _LangOpt {
   final String code;
   final String flag;
   final String label;
-  final bool active;
-  final VoidCallback onTap;
-  const _LangPill({
-    required this.code,
-    required this.flag,
-    required this.label,
-    required this.active,
-    required this.onTap,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    return Expanded(
-      child: GestureDetector(
-        onTap: onTap,
-        child: AnimatedContainer(
-          duration: const Duration(milliseconds: 180),
-          padding: const EdgeInsets.symmetric(vertical: 10),
-          decoration: BoxDecoration(
-            color: active ? AppColors.primary : AppColors.bg,
-            borderRadius: BorderRadius.circular(AppConstants.radiusMD),
-            border: Border.all(
-              color: active ? AppColors.primary : AppColors.border,
-              width: active ? 2 : 1,
-            ),
-          ),
-          child: Column(
-            children: [
-              Text(flag, style: const TextStyle(fontSize: 20)),
-              const SizedBox(height: 4),
-              Text(
-                label,
-                style: GoogleFonts.plusJakartaSans(
-                  fontSize: 11,
-                  fontWeight: FontWeight.w600,
-                  color: active ? Colors.white : AppColors.textGray,
-                ),
-                textAlign: TextAlign.center,
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-              ),
-            ],
-          ),
-        ),
-      ),
-    );
-  }
+  const _LangOpt({required this.code, required this.flag, required this.label});
 }
 
 class _Divider extends StatelessWidget {
@@ -1193,10 +1181,3 @@ class _ErrorBody extends StatelessWidget {
   }
 }
 
-// ── Data helpers ─────────────────────────────────────────────
-
-class _PaymentOpt {
-  final String key;
-  final String label;
-  const _PaymentOpt({required this.key, required this.label});
-}

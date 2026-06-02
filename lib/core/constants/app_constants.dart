@@ -52,9 +52,14 @@ class AppConstants {
   static const String usersCollection = 'users';
   static const String contributionsCollection = 'contributions';
   static const String focalReportsCollection = 'focal_reports';
+  static const String focalSessionDraftsCollection = 'focal_session_drafts';
   static const String notificationsCollection = 'notifications';
   static const String auditLogsCollection = 'audit_logs';
   static const String countersCollection = 'counters';
+  static const String reminderPlansCollection = 'reminder_plans';
+  static const String eventsCollection = 'events';
+  static const String appConfigCollection = 'app_config';
+  static const String bankDetailsDoc = 'bank_details';
 
   // ── User Roles ───────────────────────────────────────────────
   static const String roleMember = 'member';
@@ -89,6 +94,11 @@ class AppConstants {
   static const String mtnMomoUssd = '#126*4*162409*';
   static const String orangeMoneyUssd = '#150*47*617601*';
 
+  // ── pawaPay (mobile money gateway) ───────────────────────────
+  static const String pawaPayProviderMtn = 'MTN_MOMO_CMR';
+  static const String pawaPayProviderOrange = 'ORANGE_CMR';
+  static const String pawaPayCurrency = 'XAF';
+
   // ── Banking ──────────────────────────────────────────────────
   static const String bankName = 'Afriland First Bank';
   static const String bankAccount = '0908312170';
@@ -99,6 +109,7 @@ class AppConstants {
   static const String walletConfigCollection = 'wallet_config';
   static const String walletSummaryDoc = 'summary';
   static const String walletPaymentMapDoc = 'payment_method_map';
+  static const String walletRegionTotalsDoc = 'region_totals';
   static const String walletTypeMobileMoney = 'mobile_money';
   static const String walletTypeBank = 'bank';
   static const String walletTypeCash = 'cash';

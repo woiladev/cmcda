@@ -22,6 +22,24 @@ final _walletSummaryProvider =
       .map((s) => s.data());
 });
 
+/// Cumulative confirmed contributions per region: { regionName → totalFCFA }.
+final _regionTotalsProvider =
+    StreamProvider.autoDispose<Map<String, int>>((ref) {
+  return FirebaseFirestore.instance
+      .collection(AppConstants.walletConfigCollection)
+      .doc(AppConstants.walletRegionTotalsDoc)
+      .snapshots()
+      .map((s) {
+    final d = s.data() ?? {};
+    final out = <String, int>{};
+    d.forEach((k, v) {
+      if (k == 'updated_at') return;
+      if (v is num) out[k] = v.toInt();
+    });
+    return out;
+  });
+});
+
 // ── Helpers ───────────────────────────────────────────────────
 
 /// Formats an integer amount as "1 250 000 FCFA" (fr_FR style with NBSP).
@@ -71,6 +89,7 @@ class TransparencyScreen extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final l = AppLocalizations.of(context);
     final summaryAsync = ref.watch(_walletSummaryProvider);
+    final regionTotals = ref.watch(_regionTotalsProvider).valueOrNull ?? {};
 
     return AnnotatedRegion<SystemUiOverlayStyle>(
       value: const SystemUiOverlayStyle(
@@ -141,7 +160,7 @@ class TransparencyScreen extends ConsumerWidget {
                         _HeroBalanceCard(summary: summary, l: l),
                         const SizedBox(height: AppConstants.spaceLG),
                         // B. Regional leaderboard
-                        _RegionalSection(summary: summary, l: l),
+                        _RegionalSection(regionTotals: regionTotals, l: l),
                         const SizedBox(height: AppConstants.spaceLG),
                         // C. Global/operational accounts (hidden when empty)
                         _AccountsSection(summary: summary, l: l),
@@ -321,32 +340,20 @@ class _HeroBalanceCard extends StatelessWidget {
 // ── B. Regional Leaderboard ─────────────────────────────────────
 
 class _RegionalSection extends StatelessWidget {
-  final Map<String, dynamic>? summary;
+  final Map<String, int> regionTotals;
   final AppLocalizations l;
-  const _RegionalSection({required this.summary, required this.l});
+  const _RegionalSection({required this.regionTotals, required this.l});
 
   @override
   Widget build(BuildContext context) {
-    final rawAccounts = summary?['accounts'] as List<dynamic>? ?? [];
+    // Drop zero/negative entries, then rank by total contributed descending.
+    final entries =
+        regionTotals.entries.where((e) => e.value > 0).toList();
+    if (entries.isEmpty) return const SizedBox.shrink();
 
-    final regionTotals = <String, int>{};
-    final regionColors = <String, String>{};
-    for (final raw in rawAccounts) {
-      final acc = raw as Map<String, dynamic>;
-      final region = acc['region'] as String?;
-      if (region == null || region.isEmpty) continue;
-      final balance = (acc['balance'] as num?)?.toInt() ?? 0;
-      regionTotals[region] = (regionTotals[region] ?? 0) + balance;
-      regionColors[region] = acc['color'] as String? ?? '#16a34a';
-    }
+    final sorted = entries..sort((a, b) => b.value.compareTo(a.value));
 
-    if (regionTotals.isEmpty) return const SizedBox.shrink();
-
-    // Sort by balance descending — highest contributing region first
-    final sorted = regionTotals.entries.toList()
-      ..sort((a, b) => b.value.compareTo(a.value));
-
-    final grandTotal = regionTotals.values.fold(0, (s, v) => s + v);
+    final grandTotal = sorted.fold(0, (s, e) => s + e.value);
     final maxBalance = sorted.first.value;
 
     return Column(
@@ -384,8 +391,8 @@ class _RegionalSection extends StatelessWidget {
         const SizedBox(height: AppConstants.spaceMD),
         ...List.generate(sorted.length, (i) {
           final entry = sorted[i];
-          final accentColor =
-              _hexToColor(regionColors[entry.key] ?? '#16a34a');
+          final accentColor = _hexToColor(
+              AppConstants.regionWalletColors[entry.key] ?? '#16a34a');
           final pct = grandTotal > 0 ? entry.value / grandTotal : 0.0;
           final progress = maxBalance > 0 ? entry.value / maxBalance : 0.0;
           return Padding(

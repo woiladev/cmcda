@@ -60,6 +60,10 @@ android/key.properties
 functions/node_modules/
 node_modules/
 
+# Firebase Functions local env (may hold secrets)
+functions/.env
+functions/.env.*
+
 # Android build artifacts
 android/build/
 android/app/build/
