@@ -1,7 +1,3 @@
-# CLAUDE.md
-
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
-
 ## Project
 
 **CMCDA Platform** — Flutter app for collecting contributions from Muslim community members in Cameroon. Built by WoilaTech (Ngaoundéré). Firebase project: `cmcda-2f485`. Platform: Android only (the Flutter web target has been removed).
