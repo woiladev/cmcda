@@ -4,9 +4,12 @@ class AppConstants {
   // ── App Identity ────────────────────────────────────────────
   static const String appName = 'CMCDA Platform';
   static const String appVersion = '1.0.0';
-  static const String orgName = 'Cameroon Muslim Community Development Association';
-  static const String orgNameFr = 'Association Musulmane de Développement Communautaire du Cameroun';
-  static const String orgNameAr = 'جمعية التنمية المجتمعية الإسلامية بالكاميرون';
+  static const String orgName =
+      'Cameroon Muslim Community Development Association';
+  static const String orgNameFr =
+      'Association Musulmane de Développement Communautaire du Cameroun';
+  static const String orgNameAr =
+      'جمعية التنمية المجتمعية الإسلامية بالكاميرون';
   static const String acronym = 'CMCDA';
   static const String taglineFr = 'Ensemble pour le développement';
   static const String taglineEn = 'Together for development';
@@ -22,30 +25,34 @@ class AppConstants {
 
   // ── Contribution Amounts (FCFA) ──────────────────────────────
   static const int amountDaily = 100;
+  static const int amountWeekly = 700;
   static const int amountMonthly = 3000;
   static const int amountAnnual = 36500;
 
   // ── Membership ──────────────────────────────────────────────
   static const int targetMembers = 1000000;
-  static const int targetAnnualRevenue = amountAnnual * targetMembers; // 36,500,000,000
-  static const String memberPrefix = 'CM-'; // legacy prefix (pre-region rollout)
-  static const String memberPrefixFallback = 'Cmr'; // used when region is unknown
+  static const int targetAnnualRevenue =
+      amountAnnual * targetMembers; // 36,500,000,000
+  static const String memberPrefix =
+      'CM-'; // legacy prefix (pre-region rollout)
+  static const String memberPrefixFallback =
+      'Cmr'; // used when region is unknown
   static const String receiptPrefix = 'RCP-';
   static const String reportPrefix = 'RPT-';
 
   // ── Region Member Prefixes ───────────────────────────────────
   // Each region uses the 3-letter abbreviation of its capital city.
   static const Map<String, String> regionMemberPrefixes = {
-    'Adamaoua':     'Nde', // Ngaoundéré
-    'Centre':       'Yde', // Yaoundé
-    'Est':          'Bta', // Bertoua
+    'Adamaoua': 'Nde', // Ngaoundéré
+    'Centre': 'Yde', // Yaoundé
+    'Est': 'Bta', // Bertoua
     'Extrême-Nord': 'Mra', // Maroua
-    'Littoral':     'Dla', // Douala
-    'Nord':         'Goa', // Garoua
-    'Nord-Ouest':   'Bda', // Bamenda
-    'Ouest':        'Bfs', // Bafoussam
-    'Sud':          'Ebo', // Ebolowa
-    'Sud-Ouest':    'Bua', // Buea
+    'Littoral': 'Dla', // Douala
+    'Nord': 'Goa', // Garoua
+    'Nord-Ouest': 'Bda', // Bamenda
+    'Ouest': 'Bfs', // Bafoussam
+    'Sud': 'Ebo', // Ebolowa
+    'Sud-Ouest': 'Bua', // Buea
   };
 
   // ── Firestore Collections ────────────────────────────────────
@@ -60,6 +67,8 @@ class AppConstants {
   static const String eventsCollection = 'events';
   static const String appConfigCollection = 'app_config';
   static const String bankDetailsDoc = 'bank_details';
+  static const String paymentConfigDoc = 'payment_config';
+  static const String payoutsCollection = 'payouts';
 
   // ── User Roles ───────────────────────────────────────────────
   static const String roleMember = 'member';
@@ -86,6 +95,7 @@ class AppConstants {
 
   // ── Period Types ─────────────────────────────────────────────
   static const String periodDaily = 'daily';
+  static const String periodWeekly = 'weekly';
   static const String periodMonthly = 'monthly';
   static const String periodAnnual = 'annual';
   static const String periodCustom = 'custom';
@@ -93,11 +103,24 @@ class AppConstants {
   // ── Mobile Money ─────────────────────────────────────────────
   static const String mtnMomoUssd = '#126*4*162409*';
   static const String orangeMoneyUssd = '#150*47*617601*';
+  // USSD codes the payer can dial to open the MoMo menu and approve a pending
+  // deposit if the automatic payment prompt never appeared on their phone.
+  static const String mtnMomoMenuUssd = '*126#';
+  static const String orangeMoneyMenuUssd = '#150*50#';
 
   // ── pawaPay (mobile money gateway) ───────────────────────────
   static const String pawaPayProviderMtn = 'MTN_MOMO_CMR';
   static const String pawaPayProviderOrange = 'ORANGE_CMR';
+  // MTN MoMo is collected DIRECTLY via MTN's Collection API (MtnMomoRepository →
+  // initiateMtnMomoDeposit), resolved by the momoWebhook callback + polling +
+  // hourly sweep. Orange still goes through pawaPay. Set to `false` to fall MTN
+  // back onto pawaPay (like Orange) if the direct path needs to be disabled.
+  static const bool mtnMomoDirect = true;
   static const String pawaPayCurrency = 'XAF';
+  // Active gateway environment. Stored in app_config/payment_config; the Cloud
+  // Functions read it at call time to pick the sandbox vs live base URL + token.
+  static const String pawaPayEnvProduction = 'production';
+  static const String pawaPayEnvSandbox = 'sandbox';
 
   // ── Banking ──────────────────────────────────────────────────
   static const String bankName = 'Afriland First Bank';
@@ -115,30 +138,43 @@ class AppConstants {
   static const String walletTypeCash = 'cash';
   static const String walletTypeOther = 'other';
   static const List<String> walletAccountTypes = [
-    'mobile_money', 'bank', 'cash', 'other'
+    'mobile_money',
+    'bank',
+    'cash',
+    'other'
   ];
   static const String txKindInflow = 'inflow';
   static const String txKindOutflow = 'outflow';
   static const String txKindTransferIn = 'transfer_in';
   static const String txKindTransferOut = 'transfer_out';
   static const List<String> walletColorPalette = [
-    '#16a34a', '#0ea5e9', '#f59e0b', '#dc2626', '#7c3aed', '#0f766e',
+    '#16a34a',
+    '#0ea5e9',
+    '#f59e0b',
+    '#dc2626',
+    '#7c3aed',
+    '#0f766e',
   ];
   static const String defaultCurrency = 'XAF';
   static const String walletCategoryContributions = 'Contributions';
 
+  // region_totals bucket key for confirmed contributions attributable to no
+  // region (member and recorder both have none). Must match OTHER_REGION in
+  // functions/src/index.ts.
+  static const String walletOtherRegionKey = 'Autres';
+
   // One distinct color per Cameroon region, used for auto-seeded regional wallets
   static const Map<String, String> regionWalletColors = {
-    'Adamaoua':     '#16a34a',
-    'Centre':       '#0ea5e9',
-    'Est':          '#f59e0b',
+    'Adamaoua': '#16a34a',
+    'Centre': '#0ea5e9',
+    'Est': '#f59e0b',
     'Extrême-Nord': '#dc2626',
-    'Littoral':     '#7c3aed',
-    'Nord':         '#0f766e',
-    'Nord-Ouest':   '#ea580c',
-    'Ouest':        '#8b5cf6',
-    'Sud':          '#059669',
-    'Sud-Ouest':    '#0284c7',
+    'Littoral': '#7c3aed',
+    'Nord': '#0f766e',
+    'Nord-Ouest': '#ea580c',
+    'Ouest': '#8b5cf6',
+    'Sud': '#059669',
+    'Sud-Ouest': '#0284c7',
   };
 
   // ── Supported Locales ─────────────────────────────────────────
@@ -159,6 +195,94 @@ class AppConstants {
     'Sud-Ouest',
   ];
 
+  // ── Cameroon Departments by Region ───────────────────────────
+  // The 58 official departments grouped under their region. Used to
+  // populate the cascading department dropdown after a region is chosen.
+  static const Map<String, List<String>> cameroonDepartments = {
+    'Adamaoua': [
+      'Djérem',
+      'Faro-et-Déo',
+      'Mayo-Banyo',
+      'Mbéré',
+      'Vina',
+    ],
+    'Centre': [
+      'Haute-Sanaga',
+      'Lekié',
+      'Mbam-et-Inoubou',
+      'Mbam-et-Kim',
+      'Méfou-et-Afamba',
+      'Méfou-et-Akono',
+      'Mfoundi',
+      'Nyong-et-Kéllé',
+      'Nyong-et-Mfoumou',
+      "Nyong-et-So'o",
+    ],
+    'Est': [
+      'Boumba-et-Ngoko',
+      'Haut-Nyong',
+      'Kadey',
+      'Lom-et-Djérem',
+    ],
+    'Extrême-Nord': [
+      'Diamaré',
+      'Logone-et-Chari',
+      'Mayo-Danay',
+      'Mayo-Kani',
+      'Mayo-Sava',
+      'Mayo-Tsanaga',
+    ],
+    'Littoral': [
+      'Moungo',
+      'Nkam',
+      'Sanaga-Maritime',
+      'Wouri',
+    ],
+    'Nord': [
+      'Bénoué',
+      'Faro',
+      'Mayo-Louti',
+      'Mayo-Rey',
+    ],
+    'Nord-Ouest': [
+      'Boyo',
+      'Bui',
+      'Donga-Mantung',
+      'Menchum',
+      'Mezam',
+      'Momo',
+      'Ngo-Ketunjia',
+    ],
+    'Ouest': [
+      'Bamboutos',
+      'Haut-Nkam',
+      'Hauts-Plateaux',
+      'Koung-Khi',
+      'Menoua',
+      'Mifi',
+      'Ndé',
+      'Noun',
+    ],
+    'Sud': [
+      'Dja-et-Lobo',
+      'Mvila',
+      'Océan',
+      'Vallée-du-Ntem',
+    ],
+    'Sud-Ouest': [
+      'Fako',
+      'Koupé-Manengouba',
+      'Lebialem',
+      'Manyu',
+      'Meme',
+      'Ndian',
+    ],
+  };
+
+  // Departments for a region, or an empty list if the region is unknown.
+  static List<String> departmentsForRegion(String region) =>
+      cameroonDepartments[region] ?? const [];
+
   // ── Web Push (FCM VAPID key) ──────────────────────────────────
   // Fill in after enabling Web Push in Firebase Console →
   // Project Settings → Cloud Messaging → Web Push certificates → Key pair.
@@ -169,7 +293,8 @@ class AppConstants {
   // Steps: developer.apple.com → Identifiers → Services IDs → register one,
   // enable Sign-In with Apple, set redirect URL to appleRedirectUri below,
   // then enable Apple provider in Firebase Console → Authentication.
-  static const String appleServiceId = ''; // TODO: fill after Apple Developer setup
+  static const String appleServiceId =
+      ''; // TODO: fill after Apple Developer setup
   static const String appleRedirectUri =
       'https://cmcda-2f485.firebaseapp.com/__/auth/handler';
 
