@@ -127,7 +127,7 @@ Counters use `SetOptions(merge: true)` — the docs are created on first write. 
 
 ### Payment flow
 
-Cash and bank transfers (`isCashOrBank = true`) are created with `status = 'pending'` and `validationRequired = true`. Mobile money is auto-confirmed (`status = 'confirmed'`).
+Cash and bank transfers (`isCashOrBank = true`) are created with `status = 'pending'` and `validationRequired = true`. Mobile money is gateway-collected and resolves server-side (see **Mobile money** below).
 
 **Bank transfers (member-initiated)** use a single-step approval. The member sees the CMCDA bank details (from `app_config/bank_details`, falling back to `AppConstants.bankName`/`bankAccount`), uploads a **required** proof-of-transfer image (stored at `receipts/{uid}/...` via `ContributionRepository.uploadProof`, which uses `putData` — `proofUrl` is saved on the contribution), then confirms. A super admin reviews the proof and calls `confirmContribution(id, adminId)` → sets `validatedBy`, `status = confirmed`, `confirmedAt`, and credits totals in one step. Super admins edit the bank details via the admin settings → bank-details screen (`AppRoutes.adminBankDetails`).
 
@@ -136,6 +136,12 @@ Cash and bank transfers (`isCashOrBank = true`) are created with `status = 'pend
 2. Second admin calls `secondValidatePayment(id, adminId)` → sets `secondValidatorId`, `status = confirmed`, `confirmedAt`.
 
 Either flow: an admin can call `rejectPayment(id, adminId, reason)` to set `status = failed`.
+
+**Mobile money** is collected through two gateways, both async (the payer approves with a MoMo PIN, so contributions are created `pending` and flip to `confirmed`/`failed` later):
+- **MTN** goes **direct** through MTN's Collection API (`functions/src/index.ts` → `initiateMtnMomoDeposit` → `POST /collection/v1_0/requesttopay`). Resolution is three idempotent paths through `reconcileMtnDeposit`: (1) **`momoWebhook`** — MTN PUTs the final status to the registered callback host (`X-Callback-Url = https://api.cmcda.org/webhook/momo`, sent on requesttopay in **production only**; routed to the function by the Hosting rewrite in `firebase.json`). MTN fires this **once with no retry**, and it is **unsigned**, so the webhook never trusts the body — it re-fetches the authoritative status from MTN before reconciling. (2) the client polls `checkMtnMomoDeposit` every 6s while the sheet is open, and (3) `cleanStuckMtnMomoDeposits` (hourly) sweeps abandoned deposits. Polling + sweep remain the reliable fallback; the webhook is just a fast path. The contribution carries `mtnReferenceId` / `mtnStatus` / `mtnEnvironment`; MTN-collected totals accumulate in `counters/mtnmomo`. Direct MoMo via `MtnMomoRepository` on the client. **Custom domain:** `api.cmcda.org` must be added as a Firebase Hosting custom domain (DNS) pointing at the `cmcda-2f485` site, and registered as `providerCallbackHost` on the MTN API user — the callback host MUST match or MTN rejects requesttopay.
+- **Orange** still goes through **pawaPay** (`initiatePawaPayDeposit`, webhook + poll). The mobile-money sheets (`_PawaPaySheet`, `FocalPawaPaySheet`) branch on the selected provider: MTN → `MtnMomoRepository`, Orange → `PawaPayRepository`.
+
+Both gateways reconcile a successful deposit the same way (credit `users/{id}.totalContributed` + `counters/platform`, flip `status = confirmed` → `onContributionConfirmed`) and store a stable failure token in `pawaPayFailureCode`, which the client localizes via `AppLocalizations.pawaPayFailure(code)`. MTN respects the same `app_config/payment_config.environment` (sandbox/production) toggle as pawaPay; sandbox uses the MTN sandbox host + EUR, production uses `proxy.momoapi.mtn.com` (`mtncameroon`) + XAF. Secrets: `MTN_MOMO_API_USER` / `MTN_MOMO_API_KEY` / `MTN_MOMO_SUBSCRIPTION_KEY` (+ `MTN_MOMO_SANDBOX_*`), set via `firebase functions:secrets:set`.
 
 The member's "payment confirmed"/"rejected" push is sent **server-side** by the `onContributionConfirmed` Cloud Function (writes a `notifications` doc on status change) → `onNotificationCreate` (sends FCM). Redeploy functions after changing this code, or the push won't fire.
 
@@ -152,7 +158,7 @@ Key rules when touching write paths:
 - Reads via `.get()` fall back to cache offline automatically; streams (`.snapshots()`) replay from cache. No change needed.
 - **Storage uploads do NOT queue offline** — `ContributionRepository.uploadProof` (bank-transfer proof image) requires a connection. Cash + mobile-money creation work fully offline; bank transfers don't.
 
-Connectivity UX: `connectivity_plus` feeds `connectivityProvider` (`lib/core/services/connectivity_service.dart`); `ConnectivityBanner` (wired into the `MaterialApp.router` builder in `main.dart`) shows a bottom strip — "offline" → "syncing…" (`FirebaseFirestore.instance.waitForPendingWrites()`) → "synced". Strings: `offlineBannerMessage` / `syncingMessage` / `syncedMessage` / `receiptPendingSync` (fr/en/ar).
+Connectivity UX: `connectivity_plus` feeds `connectivityProvider` (`lib/core/services/connectivity_service.dart`); `ConnectivityBanner` (wired into the `MaterialApp.router` builder in `main.dart`) shows a top strip — "offline" → "syncing…" (`FirebaseFirestore.instance.waitForPendingWrites()`) → "synced". Strings: `offlineBannerMessage` / `syncingMessage` / `syncedMessage` / `receiptPendingSync` (fr/en/ar).
 
 ### Firestore security rules
 

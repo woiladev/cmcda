@@ -2,7 +2,7 @@ import * as admin from 'firebase-admin';
 import { onDocumentWritten, onDocumentCreated } from 'firebase-functions/v2/firestore';
 import { onCall, onRequest, HttpsError, CallableRequest } from 'firebase-functions/v2/https';
 import { onSchedule } from 'firebase-functions/v2/scheduler';
-import { defineSecret, defineString } from 'firebase-functions/params';
+import { defineSecret } from 'firebase-functions/params';
 import { v4 as uuidv4 } from 'uuid';
 import { createVerify, createHash } from 'crypto';
 
@@ -18,29 +18,43 @@ const COL_USERS        = 'users';
 const COL_CONTRIBUTIONS = 'contributions';
 const COL_REMINDER_PLANS = 'reminder_plans';
 const DOC_SUMMARY      = 'summary';
-const DOC_PAYMENT_MAP  = 'payment_method_map';
+const DOC_REGION_MAP   = 'region_account_map';
 const DOC_REGION_TOTALS = 'region_totals';
 
 // Annual contribution target (FCFA) — reminders stop once a member reaches it.
 const ANNUAL_TARGET = 36500;
 const CADENCE_AMOUNT: Record<string, number> = {
   daily: 100,
+  weekly: 700,
   monthly: 3000,
   annual: 36500,
 };
 
-// Ten Cameroon regions with their accent colour for seeding
-const REGIONS: { name: string; color: string }[] = [
-  { name: 'Adamaoua',     color: '#16a34a' },
-  { name: 'Centre',       color: '#0ea5e9' },
-  { name: 'Est',          color: '#f59e0b' },
-  { name: 'Extrême-Nord', color: '#dc2626' },
-  { name: 'Littoral',     color: '#7c3aed' },
-  { name: 'Nord',         color: '#0f766e' },
-  { name: 'Nord-Ouest',   color: '#ea580c' },
-  { name: 'Ouest',        color: '#8b5cf6' },
-  { name: 'Sud',          color: '#059669' },
-  { name: 'Sud-Ouest',    color: '#0284c7' },
+// Bucket key for confirmed contributions that can be attributed to no region
+// (member and recorder both have none). Kept in sync with
+// AppConstants.walletOtherRegionKey on the client.
+const OTHER_REGION = 'Autres';
+
+// The 10 Cameroon region treasury wallets, plus an "Autres" catch-all for
+// confirmed contributions that resolve to no region. Confirmed contributions
+// are routed to the wallet for their region (member → recorder → Autres), so
+// each wallet's ledger holds every contribution collected in that region and
+// its total_received is that region's running tally. Colors mirror
+// AppConstants.regionWalletColors on the client. The Autres wallet keeps the
+// invariant that the wallets sum to the gross collected — without it,
+// unattributed contributions would have no ledger to land in.
+const REGION_WALLETS: { region: string; name: string; color: string }[] = [
+  { region: 'Adamaoua',     name: 'Adamaoua',     color: '#16a34a' },
+  { region: 'Centre',       name: 'Centre',       color: '#0ea5e9' },
+  { region: 'Est',          name: 'Est',          color: '#f59e0b' },
+  { region: 'Extrême-Nord', name: 'Extrême-Nord', color: '#dc2626' },
+  { region: 'Littoral',     name: 'Littoral',     color: '#7c3aed' },
+  { region: 'Nord',         name: 'Nord',         color: '#0f766e' },
+  { region: 'Nord-Ouest',   name: 'Nord-Ouest',   color: '#ea580c' },
+  { region: 'Ouest',        name: 'Ouest',        color: '#8b5cf6' },
+  { region: 'Sud',          name: 'Sud',          color: '#059669' },
+  { region: 'Sud-Ouest',    name: 'Sud-Ouest',    color: '#0284c7' },
+  { region: OTHER_REGION,   name: 'Autres',       color: '#64748b' },
 ];
 
 // ── Helpers ───────────────────────────────────────────────────────
@@ -95,17 +109,35 @@ async function assertSuperAdmin(request: CallableRequest): Promise<string> {
   throw new HttpsError('permission-denied', 'Super admin role required.');
 }
 
-/**
- * Adjusts the cumulative per-region contribution aggregate
- * (wallet_config/region_totals) by [delta], resolving the region from the
- * member's user doc. No-op when the member or region is unknown. This aggregate
- * is independent of the (method-based) wallet accounting.
- */
-async function bumpRegionTotal(memberId: string, delta: number): Promise<void> {
-  if (!memberId || delta === 0) return;
+/** Reads a member's region from their user doc. '' when unknown. */
+async function getMemberRegion(memberId: string): Promise<string> {
+  if (!memberId) return '';
   const userDoc = await db.collection(COL_USERS).doc(memberId).get();
-  const region = (userDoc.data()?.region as string) ?? '';
-  if (!region) return;
+  return (userDoc.data()?.region as string) ?? '';
+}
+
+/**
+ * Resolves the region a confirmed contribution should be attributed to so the
+ * treasury total stays complete: the member's own region, else the recorder's
+ * region (focal officer / admin who logged it), else the OTHER_REGION bucket.
+ * Never returns '' — every confirmed contribution lands somewhere.
+ */
+async function resolveContribRegion(
+  memberId: string,
+  recordedBy: string,
+): Promise<string> {
+  const member = await getMemberRegion(memberId);
+  if (member) return member;
+  const recorder = recordedBy ? await getMemberRegion(recordedBy) : '';
+  return recorder || OTHER_REGION;
+}
+
+/** Adjusts wallet_config/region_totals[region] by [delta]. No-op if unknown. */
+async function bumpRegionTotalForRegion(
+  region: string,
+  delta: number,
+): Promise<void> {
+  if (!region || delta === 0) return;
   await db.collection(COL_CONFIG).doc(DOC_REGION_TOTALS).set(
     {
       [region]: admin.firestore.FieldValue.increment(delta),
@@ -129,16 +161,22 @@ async function recomputeAccountBalance(accountId: string): Promise<void> {
 
   const openingBalance = (accountDoc.data()?.opening_balance as number) ?? 0;
   let balance = openingBalance;
+  // Gross money received THROUGH this wallet: direct inflows only (confirmed
+  // contributions + manual inflow movements). Excludes transfer_in (internal
+  // moves) and is never reduced by outflows, so it reflects total received.
+  let received = 0;
 
   for (const tx of txsSnap.docs) {
     const d = tx.data();
     const kind = d.kind as TxKind;
     const amount = (d.amount as number) ?? 0;
     balance += isInflow(kind) ? amount : -amount;
+    if (kind === 'inflow') received += amount;
   }
 
   await accountDoc.ref.update({
     current_balance: balance,
+    total_received: received,
     updated_at: admin.firestore.FieldValue.serverTimestamp(),
   });
 }
@@ -161,6 +199,9 @@ async function rebuildSummary(): Promise<void> {
   for (const acc of accountsSnap.docs) {
     const d = acc.data();
     const bal = (d.current_balance as number) ?? 0;
+    // Gross received via this method; fall back to balance for accounts not yet
+    // recomputed since this field was added.
+    const received = (d.total_received as number) ?? bal;
     totalBalance += bal;
     accounts.push({
       id: acc.id,
@@ -169,6 +210,7 @@ async function rebuildSummary(): Promise<void> {
       color: d.color,
       currency: (d.currency as string) ?? 'XAF',
       balance: bal,
+      received,
       region: (d.region as string) ?? null,
     });
   }
@@ -296,12 +338,33 @@ export const onContributionConfirmed = onDocumentWritten(
 
     // ── Becoming confirmed ───────────────────────────────────────
     if (isConfirmed && !wasConfirmed && after) {
-      const memberId = (after.memberId as string) ?? '';
-      const amount   = (after.amount   as number) ?? 0;
-      const method   = (after.paymentMethod as string) ?? '';
+      const memberId   = (after.memberId   as string) ?? '';
+      const amount     = (after.amount     as number) ?? 0;
+      const recordedBy = (after.recordedBy as string) ?? '';
 
-      // Per-region transparency aggregate (independent of wallet routing).
-      await bumpRegionTotal(memberId, amount);
+      // The member's OWN region drives the matricule prefix — it must reflect
+      // who paid, never a fallback.
+      const memberRegion = await getMemberRegion(memberId);
+
+      // Routing region for the treasury aggregate + wallet: member's region,
+      // else the recorder's, else the "Autres" bucket. Guarantees every
+      // confirmed contribution is counted (incl. focal-collected cash for
+      // unregistered members).
+      const region = memberRegion ||
+        (recordedBy ? await getMemberRegion(recordedBy) : '') ||
+        OTHER_REGION;
+
+      // First confirmed contribution → issue the matricule and activate the
+      // member (no-op if they already have a number).
+      const matricule = await assignMatriculeOnFirstContribution(memberId, memberRegion);
+      // Backfill this contribution's denormalised memberNumber if it was created
+      // before the matricule existed (self-signup member's first payment).
+      if (matricule && !((after.memberNumber as string) ?? '').trim()) {
+        await event.data!.after.ref.update({ memberNumber: matricule });
+      }
+
+      // Per-region transparency aggregate — always runs (region never empty).
+      await bumpRegionTotalForRegion(region, amount);
 
       // Notify the member their contribution is confirmed (covers mobile-money
       // auto-confirm AND admin dual-validation — both flip status to confirmed).
@@ -315,20 +378,15 @@ export const onContributionConfirmed = onDocumentWritten(
         data:   { amount: String(amount), receiptNumber },
       });
 
-      if (!method) {
-        console.warn(
-          `[onContributionConfirmed] Contribution ${contribId} has no paymentMethod.`,
-        );
-        return;
-      }
-
-      // Route by payment method: payment_method_map[method] → accountId
-      const mapDoc    = await db.collection(COL_CONFIG).doc(DOC_PAYMENT_MAP).get();
-      const accountId = (mapDoc.data()?.[method] as string) ?? null;
+      // Route to this region's wallet: region_account_map[region]. `region`
+      // was resolved above (member → recorder → Autres), so once
+      // seedRegionWallets has run there is always a wallet to land in.
+      const mapDoc    = await db.collection(COL_CONFIG).doc(DOC_REGION_MAP).get();
+      const accountId = (mapDoc.data()?.[region] as string) ?? null;
 
       if (!accountId) {
         console.warn(
-          `[onContributionConfirmed] No wallet mapped for method "${method}". ` +
+          `[onContributionConfirmed] No wallet mapped for region "${region}". ` +
           `Run "Initialize wallets". Skipping wallet tx for contribution ${contribId}.`,
         );
         return;
@@ -352,9 +410,14 @@ export const onContributionConfirmed = onDocumentWritten(
 
     // ── Was confirmed but no longer ──────────────────────────────
     if (wasConfirmed && !isConfirmed) {
-      // Reverse the per-region aggregate.
-      await bumpRegionTotal(
+      // Reverse the per-region aggregate, resolving the same bucket the
+      // confirmation credited (member region → recorder region → Autres).
+      const reverseRegion = await resolveContribRegion(
         (before?.memberId as string) ?? '',
+        (before?.recordedBy as string) ?? '',
+      );
+      await bumpRegionTotalForRegion(
+        reverseRegion,
         -((before?.amount as number) ?? 0),
       );
 
@@ -573,6 +636,45 @@ const REGION_MEMBER_PREFIXES: Record<string, string> = {
 };
 const MEMBER_PREFIX_FALLBACK = 'Cmr';
 
+/**
+ * On a member's first confirmed contribution, issues their matricule and flips
+ * their status to 'active'. Self-signup members are created with an empty
+ * memberNumber and 'inactive' status; this is where they get activated.
+ *
+ * No-op when the member already has a memberNumber (so it never re-issues for
+ * members onboarded by a focal officer, nor on later contributions). Runs in a
+ * single transaction over the user doc + counters/members so two contributions
+ * confirmed at nearly the same time can't double-issue a number.
+ */
+async function assignMatriculeOnFirstContribution(
+  memberId: string,
+  region: string,
+): Promise<string> {
+  if (!memberId) return '';
+  return db.runTransaction(async (tx) => {
+    const userRef  = db.collection(COL_USERS).doc(memberId);
+    const userSnap = await tx.get(userRef);
+    if (!userSnap.exists) return '';
+
+    const existing = ((userSnap.data()?.memberNumber as string) ?? '').trim();
+    if (existing !== '') return existing; // already has a matricule
+
+    const counterRef  = db.collection('counters').doc('members');
+    const counterSnap = await tx.get(counterRef);
+    const next   = ((counterSnap.data()?.count as number) ?? 0) + 1;
+    const prefix = REGION_MEMBER_PREFIXES[region] ?? MEMBER_PREFIX_FALLBACK;
+    const matricule = `${prefix}-${String(next).padStart(6, '0')}`;
+
+    tx.set(counterRef, { count: next }, { merge: true });
+    tx.update(userRef, {
+      memberNumber: matricule,
+      status:       'active',
+      updatedAt:    admin.firestore.FieldValue.serverTimestamp(),
+    });
+    return matricule;
+  });
+}
+
 // Extracts the numeric sequence from a matricule like "Yde-000012" → 12.
 // Returns NaN when the string has no usable digits.
 function parseMatriculeSeq(raw: string): number {
@@ -610,6 +712,17 @@ export const repairMemberNumbers = onCall(
       const region = (doc.data().region as string) ?? '';
       const current = ((doc.data().memberNumber as string) ?? '').trim();
       const seq = parseMatriculeSeq(current);
+
+      // Members only earn a matricule once their first contribution is confirmed
+      // (status flips to 'active'); staff always have one. A legitimately-empty,
+      // not-yet-active member must be left alone — issuing a number here would
+      // wrongly "activate" them before they have paid.
+      const status = (doc.data().status as string) ?? 'inactive';
+      const userRole = (doc.data().role as string) ?? 'member';
+      const isStaff = userRole === 'focal' || userRole === 'admin' ||
+                      userRole === 'super_admin';
+      const shouldHaveMatricule = isStaff || status === 'active';
+      if (current === '' && !shouldHaveMatricule) continue;
 
       const needsNew = current === '' || Number.isNaN(seq) || claimed.has(seq);
       if (!needsNew) {
@@ -882,40 +995,56 @@ export const onFocalReportSubmitted = onDocumentWritten(
   },
 );
 
-// ── 4. seedRegionalWallets ────────────────────────────────────────
-// Callable (admin only): idempotently creates one wallet_account per
-// Cameroon region and sets payment_method_map to { region → accountId }.
-// Safe to call multiple times — existing regional accounts are reused.
+// ── 4. seedRegionWallets ──────────────────────────────────────────
+// Callable (super_admin only): idempotently creates one wallet_account per
+// Cameroon region (+ an "Autres" catch-all) and sets the region → accountId map
+// (wallet_config/region_account_map). Confirmed contributions are routed to the
+// wallet for their region, so each wallet's ledger holds every contribution
+// collected in that region and starts at 0 until money arrives. Reused wallets
+// are un-archived; any other active account (e.g. legacy payment-method wallets)
+// is archived so the accounts list shows only the region wallets. Wallets are
+// keyed by the `region` field — safe to call multiple times.
 
-export const seedRegionalWallets = onCall(
+export const seedRegionWallets = onCall(
   { region: 'europe-west1' },
   async (request) => {
     const uid = await assertSuperAdmin(request);
     const now = admin.firestore.FieldValue.serverTimestamp();
-    const paymentMap: Record<string, string> = {};
+    const regionMap: Record<string, string> = {};
+    const keepIds = new Set<string>();
     let created = 0;
     let reused  = 0;
 
-    for (const r of REGIONS) {
+    for (const w of REGION_WALLETS) {
       const existing = await db
         .collection(COL_ACCOUNTS)
-        .where('region', '==', r.name)
+        .where('region', '==', w.region)
         .limit(1)
         .get();
 
       let accountId: string;
       if (!existing.empty) {
         accountId = existing.docs[0].id;
+        // Re-activate a previously-archived region wallet and refresh its label.
+        await existing.docs[0].ref.update({
+          archived: false,
+          name: w.name,
+          type: 'other',
+          color: w.color,
+          method: null,
+          updated_at: now,
+        });
         reused++;
       } else {
         const ref = await db.collection(COL_ACCOUNTS).add({
-          name:            `Trésorerie – ${r.name}`,
+          name:            w.name,
           type:            'other',
+          method:          null,
           currency:        'XAF',
           opening_balance: 0,
           current_balance: 0,
-          color:           r.color,
-          region:          r.name,
+          color:           w.color,
+          region:          w.region,
           archived:        false,
           created_by:      uid,
           created_at:      now,
@@ -925,38 +1054,78 @@ export const seedRegionalWallets = onCall(
         created++;
       }
 
-      paymentMap[r.name] = accountId;
+      regionMap[w.region] = accountId;
+      keepIds.add(accountId);
     }
 
-    await db.collection(COL_CONFIG).doc(DOC_PAYMENT_MAP).set(paymentMap);
+    // Overwrite the routing map with region → account (drops legacy method keys).
+    await db.collection(COL_CONFIG).doc(DOC_REGION_MAP).set(regionMap);
+
+    // Archive every other active account (legacy payment-method wallets / other)
+    // so only the region wallets remain in the accounts list.
+    let archived = 0;
+    const allAccounts = await db.collection(COL_ACCOUNTS).get();
+    for (const acc of allAccounts.docs) {
+      if (keepIds.has(acc.id)) continue;
+      if (acc.data().archived === true) continue;
+      await acc.ref.update({ archived: true, updated_at: now });
+      archived++;
+    }
 
     // Trigger a summary rebuild
     await rebuildSummary();
 
-    return { created, reused, regions: Object.keys(paymentMap).length };
+    return { created, reused, archived, regions: Object.keys(regionMap).length };
   },
 );
 
 // ── 5. backfillConfirmedContributions ─────────────────────────
-// Callable (admin only): scans all confirmed contributions and creates
-// missing wallet_transactions for any that were confirmed before the
-// onContributionConfirmed trigger was deployed.
-// Idempotent — skips contributions that already have a linked transaction.
+// Callable (super_admin only): reconciles wallet inflows with confirmed
+// contributions, routing each to its REGION wallet. To guarantee the region
+// wallets equal the sum of confirmed contributions (and to migrate data created
+// under the old payment-method routing), it deletes every existing
+// contribution-linked wallet_transaction and recreates them by region. Manual
+// treasury entries (transfers / adjustments, which have no contribution_id) are
+// left untouched.
 
 export const backfillConfirmedContributions = onCall(
   { region: 'europe-west1' },
   async (request) => {
     await assertSuperAdmin(request);
 
-    // Load payment map once
-    const mapDoc = await db.collection(COL_CONFIG).doc(DOC_PAYMENT_MAP).get();
-    const paymentMap = (mapDoc.data() ?? {}) as Record<string, string>;
+    // Load region → account map once
+    const mapDoc = await db.collection(COL_CONFIG).doc(DOC_REGION_MAP).get();
+    const regionMap = (mapDoc.data() ?? {}) as Record<string, string>;
 
-    if (Object.keys(paymentMap).length === 0) {
+    if (Object.keys(regionMap).length === 0) {
       throw new HttpsError(
         'failed-precondition',
-        'Payment map is empty. Initialize wallets first.',
+        'Region wallet map is empty. Initialize wallets first.',
       );
+    }
+
+    // memberId → region, from a single users read — used to route each
+    // contribution the same way the live trigger does.
+    const usersSnap = await db.collection(COL_USERS).get();
+    const regionByMember = new Map<string, string>();
+    for (const u of usersSnap.docs) {
+      const region = (u.data().region as string) ?? '';
+      if (region) regionByMember.set(u.id, region);
+    }
+
+    // Delete all auto-generated contribution-linked transactions so they can be
+    // recreated on the correct region wallet (drops any left on archived
+    // method wallets). Chunked to stay under the 500-op batch limit.
+    const existingTxSnap = await db
+      .collection(COL_TRANSACTIONS)
+      .where('contribution_id', '!=', null)
+      .get();
+    for (let i = 0; i < existingTxSnap.docs.length; i += 450) {
+      const batch = db.batch();
+      for (const doc of existingTxSnap.docs.slice(i, i + 450)) {
+        batch.delete(doc.ref);
+      }
+      await batch.commit();
     }
 
     // Fetch all confirmed contributions
@@ -965,39 +1134,40 @@ export const backfillConfirmedContributions = onCall(
       .where('status', '==', 'confirmed')
       .get();
 
-    // Fetch all existing contribution-linked transactions in one query
-    const existingTxSnap = await db
-      .collection(COL_TRANSACTIONS)
-      .where('contribution_id', '!=', null)
-      .get();
-
-    const alreadyLinked = new Set<string>(
-      existingTxSnap.docs
-        .map((d) => d.data().contribution_id as string | null)
-        .filter((id): id is string => !!id),
-    );
-
     let created = 0;
-    let skipped = 0;
+    const skipped = 0;
     let failed  = 0;
+
+    // Recompute the CMCDA-collected pawaPay balance counter from scratch, per
+    // environment. Legacy pawaPay deposits without a stored environment are
+    // treated as production.
+    const ppCollected: Record<string, number> = { production: 0, sandbox: 0 };
 
     for (const contrib of confirmedSnap.docs) {
       const contribId = contrib.id;
 
-      // Skip if a wallet transaction already exists for this contribution
-      if (alreadyLinked.has(contribId)) {
-        skipped++;
-        continue;
-      }
-
       const d        = contrib.data();
       const memberId = (d.memberId as string) ?? '';
       const amount   = (d.amount   as number) ?? 0;
-      const method   = (d.paymentMethod as string) ?? '';
 
-      if (!method) { failed++; continue; }
+      // Tally pawaPay-collected amounts (mobile-money deposits routed through
+      // pawaPay carry a depositId).
+      const method = (d.paymentMethod as string) ?? '';
+      const isPawaPay =
+        method === 'mtn_momo' || method === 'orange_money' || !!d.depositId;
+      if (isPawaPay) {
+        const e = (d.pawaPayEnvironment as string) === 'sandbox'
+          ? 'sandbox'
+          : 'production';
+        ppCollected[e] += amount;
+      }
 
-      const accountId = paymentMap[method] ?? null;
+      // Route to the region wallet: member's region → recorder's → Autres.
+      const region =
+        regionByMember.get(memberId) ||
+        regionByMember.get((d.recordedBy as string) ?? '') ||
+        OTHER_REGION;
+      const accountId = regionMap[region] ?? null;
       if (!accountId) { failed++; continue; }
 
       await db.collection(COL_TRANSACTIONS).add({
@@ -1016,8 +1186,29 @@ export const backfillConfirmedContributions = onCall(
       created++;
     }
 
-    // Rebuild summary once at the end
-    if (created > 0) await rebuildSummary();
+    // Sum completed payouts per environment, then overwrite the pawaPay counter.
+    const ppWithdrawn: Record<string, number> = { production: 0, sandbox: 0 };
+    const payoutsSnap = await db
+      .collection('payouts')
+      .where('status', '==', 'COMPLETED')
+      .get();
+    for (const p of payoutsSnap.docs) {
+      const pd = p.data();
+      const e = (pd.environment as string) === 'sandbox'
+        ? 'sandbox'
+        : 'production';
+      ppWithdrawn[e] += (pd.amount as number) ?? 0;
+    }
+    await db.collection('counters').doc('pawapay').set({
+      collected_production: ppCollected.production,
+      collected_sandbox: ppCollected.sandbox,
+      withdrawn_production: ppWithdrawn.production,
+      withdrawn_sandbox: ppWithdrawn.sandbox,
+    }, { merge: true });
+
+    // Rebuild summary once at the end (always — txs may have been deleted even
+    // when nothing new was created).
+    await rebuildSummary();
 
     return { created, skipped, failed, total: confirmedSnap.size };
   },
@@ -1025,8 +1216,10 @@ export const backfillConfirmedContributions = onCall(
 
 // ── backfillRegionTotals ──────────────────────────────────────────
 // Callable (super_admin only): recomputes wallet_config/region_totals by
-// summing every confirmed contribution into its member's region. Idempotent —
-// overwrites the doc with the freshly computed map.
+// summing every confirmed contribution into its region. Mirrors the live
+// onContributionConfirmed routing exactly: member's region → recorder's region
+// → OTHER_REGION bucket, so the recomputed total equals the gross collected.
+// Idempotent — overwrites the doc with the freshly computed map.
 
 export const backfillRegionTotals = onCall(
   { region: 'europe-west1' },
@@ -1050,8 +1243,12 @@ export const backfillRegionTotals = onCall(
     let total = 0;
     for (const c of confirmedSnap.docs) {
       const d = c.data();
-      const region = regionByMember.get((d.memberId as string) ?? '') ?? '';
-      if (!region) continue;
+      // member's region → recorder's region → Autres (the regionByMember map
+      // covers recorders too, since they are users with regions).
+      const region =
+        regionByMember.get((d.memberId as string) ?? '') ||
+        regionByMember.get((d.recordedBy as string) ?? '') ||
+        OTHER_REGION;
       const amount = (d.amount as number) ?? 0;
       totals[region] = (totals[region] ?? 0) + amount;
       total += amount;
@@ -1220,6 +1417,7 @@ function addYears(d: Date, n: number): Date {
 function nextCadence(from: Date, frequency: string): Date {
   switch (frequency) {
     case 'daily':  return addDays(from, 1);
+    case 'weekly': return addDays(from, 7);
     case 'annual': return addYears(from, 1);
     case 'monthly':
     default:       return addMonths(from, 1);
@@ -1318,14 +1516,57 @@ export const sendContributionReminders = onSchedule(
 // polling (checkPawaPayDeposit). Contributions are therefore created `pending`
 // and flipped to `confirmed` only once the money is actually collected.
 
+// Two tokens are held server-side: the production token and a sandbox token.
+// Which one (and which base URL) is used is decided AT CALL TIME from the
+// app_config/payment_config.environment field, so a super admin can flip the
+// environment from the admin UI without a redeploy. Every pawaPay function must
+// therefore declare BOTH secrets in its `secrets:` array.
 const PAWAPAY_API_TOKEN = defineSecret('PAWAPAY_API_TOKEN');
-const PAWAPAY_BASE_URL = defineString('PAWAPAY_BASE_URL', {
-  default: 'https://api.sandbox.pawapay.io',
-});
+const PAWAPAY_SANDBOX_TOKEN = defineSecret('PAWAPAY_SANDBOX_TOKEN');
+
+const PAWAPAY_PROD_BASE = 'https://api.pawapay.io';
+const PAWAPAY_SANDBOX_BASE = 'https://api.sandbox.pawapay.io';
 
 const PAWAPAY_PROVIDER_MTN = 'MTN_MOMO_CMR';
 const PAWAPAY_PROVIDER_ORANGE = 'ORANGE_CMR';
 const PAWAPAY_CURRENCY = 'XAF';
+
+interface PawaPayEnv {
+  baseUrl: string;
+  token: string;
+  environment: string; // 'production' | 'sandbox'
+}
+
+// Resolves the active pawaPay environment from Firestore. Defaults to
+// 'production' when the config doc/field is missing (the app is live by
+// default). Reads on every pawaPay invocation — one extra Firestore get,
+// which is negligible next to the outbound HTTP call.
+async function resolvePawaPayEnv(): Promise<PawaPayEnv> {
+  let environment = 'production';
+  try {
+    const snap = await db
+      .collection('app_config')
+      .doc('payment_config')
+      .get();
+    const env = snap.data()?.environment as string | undefined;
+    if (env === 'sandbox') environment = 'sandbox';
+  } catch {
+    // On any read failure, stay on production rather than silently testing.
+    environment = 'production';
+  }
+  if (environment === 'sandbox') {
+    return {
+      baseUrl: PAWAPAY_SANDBOX_BASE,
+      token: PAWAPAY_SANDBOX_TOKEN.value(),
+      environment,
+    };
+  }
+  return {
+    baseUrl: PAWAPAY_PROD_BASE,
+    token: PAWAPAY_API_TOKEN.value(),
+    environment,
+  };
+}
 
 interface PawaPayResult {
   ok: boolean;
@@ -1333,18 +1574,20 @@ interface PawaPayResult {
   body: any;
 }
 
-// Calls the pawaPay v2 API with the bearer token. Returns parsed JSON + ok flag
-// rather than throwing, so callers can map failures to contribution state.
+// Calls the pawaPay v2 API with the bearer token for the resolved environment.
+// Returns parsed JSON + ok flag rather than throwing, so callers can map
+// failures to contribution/payout state.
 async function pawaPayFetch(
+  env: PawaPayEnv,
   path: string,
   method: 'GET' | 'POST',
   body?: unknown,
 ): Promise<PawaPayResult> {
-  const base = PAWAPAY_BASE_URL.value().replace(/\/+$/, '');
+  const base = env.baseUrl.replace(/\/+$/, '');
   const res = await fetch(`${base}${path}`, {
     method,
     headers: {
-      'Authorization': `Bearer ${PAWAPAY_API_TOKEN.value()}`,
+      'Authorization': `Bearer ${env.token}`,
       'Content-Type': 'application/json',
     },
     body: body ? JSON.stringify(body) : undefined,
@@ -1376,6 +1619,53 @@ function providerToMethod(provider: string): string {
 function currentPeriod(): string {
   const now = new Date();
   return `${now.getUTCFullYear()}-${String(now.getUTCMonth() + 1).padStart(2, '0')}`;
+}
+
+// French fallback text per stable failure token. Stored in `notes` so the admin
+// queue and older clients always show a readable reason; the client localizes
+// the stable token (pawaPayFailureCode) into fr/en/ar via AppLocalizations.
+const PP_FAILURE_FR: Record<string, string> = {
+  INSUFFICIENT_BALANCE: 'Solde Mobile Money insuffisant',
+  PAYMENT_NOT_APPROVED: 'Paiement non approuvé (code PIN non saisi)',
+  PAYER_NOT_FOUND: "Ce numéro n'est pas enregistré chez l'opérateur choisi",
+  PAYER_LIMIT_REACHED: 'Limite de transaction Mobile Money atteinte',
+  PROVIDER_UNAVAILABLE: 'Opérateur momentanément indisponible',
+  AMOUNT_OUT_OF_LIMITS: 'Montant en dehors des limites autorisées',
+  INVALID_NUMBER: 'Numéro de téléphone invalide',
+  TIMEOUT: 'Délai de paiement expiré',
+  NOT_ALLOWED: "Paiement Mobile Money non autorisé pour ce compte — contactez l'opérateur",
+  GENERIC: 'Paiement échoué',
+};
+
+// Normalizes any pawaPay failureCode / rejectionCode into a stable token the
+// client can localize, plus a French fallback message. Matching is substring-
+// based so new or provider-specific code spellings still bucket sensibly;
+// anything unrecognized falls back to GENERIC.
+function normalizePawaPayFailure(
+  rawCode?: string | null,
+  rawMessage?: string | null,
+): { code: string; message: string } {
+  const c = (rawCode ?? '').toUpperCase();
+  let code = 'GENERIC';
+  if (c.includes('INSUFFICIENT') || c.includes('BALANCE')) {
+    code = 'INSUFFICIENT_BALANCE';
+  } else if (c.includes('NOT_APPROVED') || c.includes('APPROVAL') || c.includes('REJECTED_BY_PAYER')) {
+    code = 'PAYMENT_NOT_APPROVED';
+  } else if (c.includes('PAYER_NOT_FOUND') || c.includes('NOT_FOUND')) {
+    code = 'PAYER_NOT_FOUND';
+  } else if (c.includes('LIMIT')) {
+    code = 'PAYER_LIMIT_REACHED';
+  } else if (c.includes('UNAVAILABLE') || c.includes('NOT_AVAILABLE') || c.includes('TEMPORARILY')) {
+    code = 'PROVIDER_UNAVAILABLE';
+  } else if (c.includes('AMOUNT')) {
+    code = 'AMOUNT_OUT_OF_LIMITS';
+  } else if (c.includes('INVALID') && (c.includes('PHONE') || c.includes('PAYER') || c.includes('NUMBER') || c.includes('MSISDN'))) {
+    code = 'INVALID_NUMBER';
+  } else if (c.includes('TIMEOUT') || c.includes('EXPIRED')) {
+    code = 'TIMEOUT';
+  }
+  const message = PP_FAILURE_FR[code] ?? rawMessage ?? PP_FAILURE_FR.GENERIC;
+  return { code, message };
 }
 
 /**
@@ -1412,6 +1702,16 @@ async function reconcileDeposit(
         { totalContributed: admin.firestore.FieldValue.increment(amount) },
         { merge: true },
       );
+      // CMCDA-collected pawaPay balance (per environment). This — minus
+      // completed payouts — is what the withdraw screen shows as available,
+      // NOT the whole pawaPay wallet (which may hold other merchants' funds).
+      const e = (data.pawaPayEnvironment as string) === 'sandbox'
+        ? 'sandbox'
+        : 'production';
+      await db.collection('counters').doc('pawapay').set(
+        { [`collected_${e}`]: admin.firestore.FieldValue.increment(amount) },
+        { merge: true },
+      );
     }
     await contribRef.update({
       status: 'confirmed',
@@ -1422,13 +1722,14 @@ async function reconcileDeposit(
   }
 
   if (ppStatus === 'FAILED') {
-    const failureMessage =
-      (payload.failureReason?.failureMessage as string) ??
-      (payload.failureReason?.failureCode as string) ??
-      'Paiement échoué';
+    const { code, message } = normalizePawaPayFailure(
+      payload.failureReason?.failureCode,
+      payload.failureReason?.failureMessage,
+    );
     await contribRef.update({
       status: 'failed',
-      notes: failureMessage,
+      notes: message,
+      pawaPayFailureCode: code,
       pawaPayStatus: ppStatus,
     });
     return 'failed';
@@ -1449,12 +1750,12 @@ async function reconcileDeposit(
 
 let _ppKeyCache: { pem: string; keyId: string; fetchedAt: number } | null = null;
 
-async function getPpSigningKey(): Promise<{ pem: string; keyId: string }> {
+async function getPpSigningKey(env: PawaPayEnv): Promise<{ pem: string; keyId: string }> {
   const TTL_MS = 24 * 60 * 60 * 1000;
   if (_ppKeyCache && Date.now() - _ppKeyCache.fetchedAt < TTL_MS) {
     return { pem: _ppKeyCache.pem, keyId: _ppKeyCache.keyId };
   }
-  const r = await pawaPayFetch('/v1/signing-keys', 'GET');
+  const r = await pawaPayFetch(env, '/v1/signing-keys', 'GET');
   if (!r.ok) throw new Error(`Cannot fetch pawaPay signing key (HTTP ${r.status})`);
   const entries: any[] = Array.isArray(r.body) ? r.body : [r.body];
   const entry = entries[0] ?? {};
@@ -1477,6 +1778,7 @@ async function getPpSigningKey(): Promise<{ pem: string; keyId: string }> {
 async function verifyPawaPayWebhookSignature(
   req: import('express').Request,
   rawBody: Buffer,
+  env: PawaPayEnv,
 ): Promise<void> {
   const sigInput = (req.headers['signature-input'] ?? '') as string;
   const sigHeader = (req.headers['signature'] ?? '') as string;
@@ -1537,7 +1839,7 @@ async function verifyPawaPayWebhookSignature(
   const sigBase = lines.join('\n');
 
   // 5. Verify ECDSA-P256-SHA256. Try DER encoding first, then IEEE P1363 fallback.
-  const { pem } = await getPpSigningKey();
+  const { pem } = await getPpSigningKey(env);
   const tryVerify = (dsaEncoding?: 'ieee-p1363'): boolean => {
     const v = createVerify('SHA256');
     v.update(sigBase, 'utf8');
@@ -1565,7 +1867,7 @@ interface InitiateDepositRequest {
 }
 
 export const initiatePawaPayDeposit = onCall<InitiateDepositRequest>(
-  { region: 'europe-west1', secrets: [PAWAPAY_API_TOKEN] },
+  { region: 'europe-west1', secrets: [PAWAPAY_API_TOKEN, PAWAPAY_SANDBOX_TOKEN] },
   async (request) => {
     if (!request.auth) {
       throw new HttpsError('unauthenticated', 'Must be signed in.');
@@ -1611,6 +1913,7 @@ export const initiatePawaPayDeposit = onCall<InitiateDepositRequest>(
       throw new HttpsError('permission-denied', 'Account suspended.');
     }
 
+    const env = await resolvePawaPayEnv();
     const depositId = uuidv4();
     const contribRef = db.collection(COL_CONTRIBUTIONS).doc();
 
@@ -1630,10 +1933,13 @@ export const initiatePawaPayDeposit = onCall<InitiateDepositRequest>(
       depositId,
       pawaPayStatus: 'ACCEPTED',
       pawaPayProvider: provider,
+      // Which gateway environment this deposit ran against — so the
+      // CMCDA-collected balance counter never mixes sandbox with live money.
+      pawaPayEnvironment: env.environment,
       payerPhone: msisdn,
     });
 
-    const result = await pawaPayFetch('/v2/deposits', 'POST', {
+    const result = await pawaPayFetch(env, '/v2/deposits', 'POST', {
       depositId,
       amount: String(amount),
       currency: PAWAPAY_CURRENCY,
@@ -1644,12 +1950,27 @@ export const initiatePawaPayDeposit = onCall<InitiateDepositRequest>(
     });
 
     if (!result.ok) {
-      const msg =
+      const rawCode =
+        result.body?.failureReason?.failureCode ??
+        result.body?.rejectionReason?.rejectionCode ??
+        result.body?.rejectionReason?.failureCode;
+      const rawMsg =
         result.body?.message ??
         result.body?.failureReason?.failureMessage ??
-        `pawaPay returned ${result.status}`;
-      await contribRef.update({ status: 'failed', notes: String(msg), pawaPayStatus: 'FAILED' });
-      throw new HttpsError('internal', `Deposit initiation failed: ${msg}`);
+        result.body?.rejectionReason?.rejectionMessage;
+      const { code, message } = normalizePawaPayFailure(rawCode, rawMsg);
+      await contribRef.update({
+        status: 'failed',
+        notes: message,
+        pawaPayFailureCode: code,
+        pawaPayStatus: 'FAILED',
+      });
+      // Surface the stable token in details so the client localizes it.
+      throw new HttpsError(
+        'internal',
+        `Deposit initiation failed: ${rawMsg ?? rawCode ?? result.status}`,
+        { failureCode: code },
+      );
     }
 
     return {
@@ -1671,7 +1992,7 @@ export const initiatePawaPayDeposit = onCall<InitiateDepositRequest>(
 // unsigned body would be accepted.
 
 export const pawaPayWebhook = onRequest(
-  { region: 'europe-west1', secrets: [PAWAPAY_API_TOKEN] },
+  { region: 'europe-west1', secrets: [PAWAPAY_API_TOKEN, PAWAPAY_SANDBOX_TOKEN] },
   async (req, res) => {
     if (req.method !== 'POST') {
       res.status(405).send('Method Not Allowed');
@@ -1683,7 +2004,8 @@ export const pawaPayWebhook = onRequest(
     const rawBody: Buffer =
       (req as any).rawBody ?? Buffer.from(JSON.stringify(req.body ?? {}), 'utf8');
     try {
-      await verifyPawaPayWebhookSignature(req, rawBody);
+      const env = await resolvePawaPayEnv();
+      await verifyPawaPayWebhookSignature(req, rawBody, env);
     } catch (e) {
       console.warn('[pawaPayWebhook] signature rejected:', (e as Error).message);
       res.status(401).send('Invalid signature');
@@ -1727,7 +2049,7 @@ interface CheckDepositRequest {
 }
 
 export const checkPawaPayDeposit = onCall<CheckDepositRequest>(
-  { region: 'europe-west1', secrets: [PAWAPAY_API_TOKEN] },
+  { region: 'europe-west1', secrets: [PAWAPAY_API_TOKEN, PAWAPAY_SANDBOX_TOKEN] },
   async (request) => {
     if (!request.auth) {
       throw new HttpsError('unauthenticated', 'Must be signed in.');
@@ -1762,7 +2084,8 @@ export const checkPawaPayDeposit = onCall<CheckDepositRequest>(
       throw new HttpsError('failed-precondition', 'No depositId on contribution.');
     }
 
-    const result = await pawaPayFetch(`/v2/deposits/${depositId}`, 'GET');
+    const env = await resolvePawaPayEnv();
+    const result = await pawaPayFetch(env, `/v2/deposits/${depositId}`, 'GET');
     if (!result.ok) {
       throw new HttpsError('internal', `pawaPay status check failed (${result.status}).`);
     }
@@ -1783,7 +2106,7 @@ interface PredictProviderRequest {
 }
 
 export const predictPawaPayProvider = onCall<PredictProviderRequest>(
-  { region: 'europe-west1', secrets: [PAWAPAY_API_TOKEN] },
+  { region: 'europe-west1', secrets: [PAWAPAY_API_TOKEN, PAWAPAY_SANDBOX_TOKEN] },
   async (request) => {
     if (!request.auth) {
       throw new HttpsError('unauthenticated', 'Must be signed in.');
@@ -1792,7 +2115,8 @@ export const predictPawaPayProvider = onCall<PredictProviderRequest>(
     if (msisdn.length < 11) {
       throw new HttpsError('invalid-argument', 'Invalid phone number.');
     }
-    const result = await pawaPayFetch('/v2/predict-provider', 'POST', {
+    const env = await resolvePawaPayEnv();
+    const result = await pawaPayFetch(env, '/v2/predict-provider', 'POST', {
       phoneNumber: msisdn,
     });
     if (!result.ok) {
@@ -1814,8 +2138,9 @@ export const predictPawaPayProvider = onCall<PredictProviderRequest>(
 // so the admin pending queue never accumulates ghost entries.
 
 export const cleanStuckPawaPayDeposits = onSchedule(
-  { region: 'europe-west1', schedule: 'every 2 hours', secrets: [PAWAPAY_API_TOKEN] },
+  { region: 'europe-west1', schedule: 'every 2 hours', secrets: [PAWAPAY_API_TOKEN, PAWAPAY_SANDBOX_TOKEN] },
   async () => {
+    const env = await resolvePawaPayEnv();
     const cutoff = admin.firestore.Timestamp.fromDate(
       new Date(Date.now() - 4 * 60 * 60 * 1000),
     );
@@ -1843,7 +2168,7 @@ export const cleanStuckPawaPayDeposits = onSchedule(
       mobileMoney.map(async (doc) => {
         const depositId = doc.data().depositId as string;
         try {
-          const r = await pawaPayFetch(`/v2/deposits/${depositId}`, 'GET');
+          const r = await pawaPayFetch(env, `/v2/deposits/${depositId}`, 'GET');
           if (r.ok) {
             const dep = Array.isArray(r.body)
               ? r.body[0]
@@ -1862,6 +2187,7 @@ export const cleanStuckPawaPayDeposits = onSchedule(
         await doc.ref.update({
           status: 'failed',
           notes: 'Délai de paiement expiré',
+          pawaPayFailureCode: 'TIMEOUT',
           pawaPayStatus: 'FAILED',
         });
         forceFailed++;
@@ -1870,6 +2196,872 @@ export const cleanStuckPawaPayDeposits = onSchedule(
 
     console.log(
       `[cleanStuckPawaPayDeposits] scanned=${mobileMoney.length} reconciled=${reconciled} forceFailed=${forceFailed}`,
+    );
+  },
+);
+
+// ═══════════════════════════════════════════════════════════════════
+// pawaPay payouts (withdrawals) — super-admin only
+// ═══════════════════════════════════════════════════════════════════
+//
+// A payout disburses money FROM the pawaPay wallet balance (the funds CMCDA
+// collected via deposits) TO a Mobile Money number. Like deposits, payouts are
+// async: we initiate, pawaPay processes, and the final status arrives later.
+// v1 reconciles by polling (checkPawaPayPayout) — the admin withdraw screen
+// polls after initiating, mirroring the member deposit flow. The `payouts`
+// collection is the source of truth (clients cannot write it; rules block it).
+
+const COL_PAYOUTS = 'payouts';
+
+// Reconciles a payouts doc with a pawaPay payout status payload. Idempotent:
+// no-op once COMPLETED/FAILED. Mirrors reconcileDeposit but without crediting
+// any totals (payouts move money out, not in).
+async function reconcilePayout(
+  payoutRef: admin.firestore.DocumentReference,
+  payload: { status?: string; failureReason?: any },
+): Promise<string> {
+  const snap = await payoutRef.get();
+  if (!snap.exists) return 'FAILED';
+  const pdata = snap.data()!;
+  const current = (pdata.status as string) ?? 'ACCEPTED';
+  if (current === 'COMPLETED' || current === 'FAILED') return current;
+
+  const ppStatus = (payload.status as string) ?? '';
+
+  if (ppStatus === 'COMPLETED') {
+    // Debit the CMCDA-collected balance counter for this environment so the
+    // withdraw screen's "available" reflects money already taken out.
+    const amount = (pdata.amount as number) ?? 0;
+    const e = (pdata.environment as string) === 'sandbox'
+      ? 'sandbox'
+      : 'production';
+    if (amount > 0) {
+      await db.collection('counters').doc('pawapay').set(
+        { [`withdrawn_${e}`]: admin.firestore.FieldValue.increment(amount) },
+        { merge: true },
+      );
+    }
+    await payoutRef.update({
+      status: 'COMPLETED',
+      pawaPayStatus: ppStatus,
+      completedAt: admin.firestore.FieldValue.serverTimestamp(),
+    });
+    return 'COMPLETED';
+  }
+
+  if (ppStatus === 'FAILED' || ppStatus === 'REJECTED') {
+    const { code, message } = normalizePawaPayFailure(
+      payload.failureReason?.failureCode,
+      payload.failureReason?.failureMessage,
+    );
+    await payoutRef.update({
+      status: 'FAILED',
+      pawaPayStatus: ppStatus,
+      pawaPayFailureCode: code,
+      notes: message,
+    });
+    return 'FAILED';
+  }
+
+  // ACCEPTED / ENQUEUED / PROCESSING / IN_RECONCILIATION — still in flight.
+  if (ppStatus) await payoutRef.update({ pawaPayStatus: ppStatus });
+  return 'PENDING';
+}
+
+// ── getPawaPayBalance ──────────────────────────────────────────────
+// Callable (super-admin): returns the amount CMCDA has collected through THIS
+// app via pawaPay (confirmed deposits) minus what's already been withdrawn —
+// NOT the whole pawaPay wallet balance, which may hold funds from other apps
+// sharing the same pawaPay account. Tracked per environment in
+// counters/pawapay (collected_{env} / withdrawn_{env}), maintained server-side
+// by reconcileDeposit / reconcilePayout. The live pawaPay wallet balance is
+// still returned as `walletBalance` for reference (it caps what can actually be
+// disbursed), but the withdraw screen shows `balance`.
+export const getPawaPayBalance = onCall(
+  { region: 'europe-west1', secrets: [PAWAPAY_API_TOKEN, PAWAPAY_SANDBOX_TOKEN] },
+  async (request) => {
+    await assertSuperAdmin(request);
+    const env = await resolvePawaPayEnv();
+
+    const counterSnap =
+      await db.collection('counters').doc('pawapay').get();
+    const c = counterSnap.data() ?? {};
+    const collected = (c[`collected_${env.environment}`] as number) ?? 0;
+    const withdrawn = (c[`withdrawn_${env.environment}`] as number) ?? 0;
+    const balance = Math.max(0, collected - withdrawn);
+
+    // Best-effort live wallet balance (upper bound on what can be disbursed).
+    let walletBalance: number | null = null;
+    try {
+      const result = await pawaPayFetch(env, '/v2/wallet-balances', 'GET');
+      if (result.ok) {
+        const balances: any[] = Array.isArray(result.body?.balances)
+          ? result.body.balances
+          : [];
+        const xaf = balances.find(
+          (b) => (b?.currency as string) === PAWAPAY_CURRENCY,
+        );
+        if (xaf) walletBalance = Math.round(parseFloat(xaf.balance) || 0);
+      }
+    } catch {
+      walletBalance = null;
+    }
+
+    return {
+      balance,
+      collected,
+      withdrawn,
+      walletBalance,
+      currency: PAWAPAY_CURRENCY,
+      environment: env.environment,
+    };
+  },
+);
+
+// ── initiatePawaPayPayout ──────────────────────────────────────────
+// Callable (super-admin): disburses `amount` XAF to a Mobile Money number.
+interface InitiatePayoutRequest {
+  amount: number;
+  phoneNumber: string;
+  provider: string;
+  note?: string;
+}
+
+export const initiatePawaPayPayout = onCall<InitiatePayoutRequest>(
+  { region: 'europe-west1', secrets: [PAWAPAY_API_TOKEN, PAWAPAY_SANDBOX_TOKEN] },
+  async (request) => {
+    const uid = await assertSuperAdmin(request);
+    const { amount, phoneNumber, provider, note } = request.data;
+
+    if (!Number.isInteger(amount) || amount <= 0) {
+      throw new HttpsError('invalid-argument', 'amount must be a positive integer.');
+    }
+    if (provider !== PAWAPAY_PROVIDER_MTN && provider !== PAWAPAY_PROVIDER_ORANGE) {
+      throw new HttpsError('invalid-argument', `Unsupported provider: ${provider}.`);
+    }
+    const msisdn = toMsisdn(phoneNumber);
+    if (msisdn.length < 11) {
+      throw new HttpsError('invalid-argument', 'Invalid phone number.');
+    }
+
+    const env = await resolvePawaPayEnv();
+    const payoutId = uuidv4();
+    const payoutRef = db.collection(COL_PAYOUTS).doc(payoutId);
+
+    await payoutRef.set({
+      payoutId,
+      amount,
+      currency: PAWAPAY_CURRENCY,
+      phoneNumber: msisdn,
+      provider,
+      note: note ?? null,
+      status: 'ACCEPTED',
+      pawaPayStatus: 'ACCEPTED',
+      environment: env.environment,
+      createdBy: uid,
+      createdAt: admin.firestore.FieldValue.serverTimestamp(),
+    });
+
+    const result = await pawaPayFetch(env, '/v2/payouts', 'POST', {
+      payoutId,
+      amount: String(amount),
+      currency: PAWAPAY_CURRENCY,
+      recipient: {
+        type: 'MMO',
+        accountDetails: { phoneNumber: msisdn, provider },
+      },
+    });
+
+    if (!result.ok) {
+      const rawCode =
+        result.body?.failureReason?.failureCode ??
+        result.body?.rejectionReason?.rejectionCode ??
+        result.body?.rejectionReason?.failureCode;
+      const rawMsg =
+        result.body?.message ??
+        result.body?.failureReason?.failureMessage ??
+        result.body?.rejectionReason?.rejectionMessage;
+      const { code, message } = normalizePawaPayFailure(rawCode, rawMsg);
+      await payoutRef.update({
+        status: 'FAILED',
+        pawaPayStatus: 'FAILED',
+        pawaPayFailureCode: code,
+        notes: message,
+      });
+      throw new HttpsError(
+        'internal',
+        `Payout initiation failed: ${rawMsg ?? rawCode ?? result.status}`,
+        { failureCode: code },
+      );
+    }
+
+    return {
+      payoutId,
+      status: (result.body?.status as string) ?? 'ACCEPTED',
+    };
+  },
+);
+
+// ── checkPawaPayPayout ─────────────────────────────────────────────
+// Callable (super-admin): polls live payout status and reconciles the doc.
+interface CheckPayoutRequest {
+  payoutId: string;
+}
+
+export const checkPawaPayPayout = onCall<CheckPayoutRequest>(
+  { region: 'europe-west1', secrets: [PAWAPAY_API_TOKEN, PAWAPAY_SANDBOX_TOKEN] },
+  async (request) => {
+    await assertSuperAdmin(request);
+    const { payoutId } = request.data;
+    if (!payoutId) {
+      throw new HttpsError('invalid-argument', 'payoutId is required.');
+    }
+
+    const payoutRef = db.collection(COL_PAYOUTS).doc(payoutId);
+    const snap = await payoutRef.get();
+    if (!snap.exists) {
+      throw new HttpsError('not-found', 'Payout not found.');
+    }
+    const current = (snap.data()?.status as string) ?? 'ACCEPTED';
+    if (current === 'COMPLETED' || current === 'FAILED') {
+      return { status: current };
+    }
+
+    const env = await resolvePawaPayEnv();
+    const result = await pawaPayFetch(env, `/v2/payouts/${payoutId}`, 'GET');
+    if (!result.ok) {
+      throw new HttpsError('internal', `pawaPay payout status check failed (${result.status}).`);
+    }
+    // GET /v2/payouts/{id} may return the payout object directly or wrapped.
+    const payout = Array.isArray(result.body)
+      ? result.body[0]
+      : (result.body?.data ?? result.body);
+    const status = await reconcilePayout(payoutRef, payout ?? {});
+    return { status };
+  },
+);
+
+// ═══════════════════════════════════════════════════════════════════
+// MTN MoMo direct Collection API (Cameroon)
+// ═══════════════════════════════════════════════════════════════════
+//
+// Unlike Orange (which still flows through pawaPay), MTN mobile-money deposits
+// call MTN's Collection API DIRECTLY:
+//   1. POST /collection/token/                     → short-lived bearer token
+//   2. POST /collection/v1_0/requesttopay          → push a PIN prompt to payer
+//   3. GET  /collection/v1_0/requesttopay/{refId}  → poll SUCCESSFUL/PENDING/FAILED
+// Deposits are async (the payer approves with their MoMo PIN), so contributions
+// are created `pending` and flipped to confirmed/failed by THREE paths, all
+// idempotent through reconcileMtnDeposit:
+//   • momoWebhook   — MTN PUTs the final status to our registered callback host
+//                     (api.cmcda.org → momoWebhook via the Hosting rewrite). Fast
+//                     path, but MTN fires it ONCE with no retry, so it can be lost.
+//   • checkMtnMomoDeposit — client polls while the payment sheet is open.
+//   • cleanStuckMtnMomoDeposits — hourly sweep of abandoned deposits.
+// The webhook is an optimisation layered on top of polling, never a replacement:
+// for security it ignores the callback body and re-fetches the authoritative
+// status from MTN before reconciling (see momoWebhook).
+//
+// Environment follows the SAME app_config/payment_config.environment toggle as
+// pawaPay. Production → live proxy + XAF; sandbox → MTN sandbox host + EUR. Each
+// environment carries its own apiUser / apiKey / subscription-key secret trio.
+
+const MTN_API_USER = defineSecret('MTN_MOMO_API_USER');
+const MTN_API_KEY = defineSecret('MTN_MOMO_API_KEY');
+const MTN_SUBSCRIPTION_KEY = defineSecret('MTN_MOMO_SUBSCRIPTION_KEY');
+const MTN_SANDBOX_API_USER = defineSecret('MTN_MOMO_SANDBOX_API_USER');
+const MTN_SANDBOX_API_KEY = defineSecret('MTN_MOMO_SANDBOX_API_KEY');
+const MTN_SANDBOX_SUBSCRIPTION_KEY = defineSecret('MTN_MOMO_SANDBOX_SUBSCRIPTION_KEY');
+
+// Every MTN function declares the full secret set — the active environment is
+// resolved at call time, so both trios must be available.
+const MTN_SECRETS = [
+  MTN_API_USER, MTN_API_KEY, MTN_SUBSCRIPTION_KEY,
+  MTN_SANDBOX_API_USER, MTN_SANDBOX_API_KEY, MTN_SANDBOX_SUBSCRIPTION_KEY,
+];
+
+const MTN_PROD_BASE = 'https://proxy.momoapi.mtn.com';
+const MTN_PROD_TARGET = 'mtncameroon';
+const MTN_SANDBOX_BASE = 'https://sandbox.momodeveloper.mtn.com';
+const MTN_SANDBOX_TARGET = 'sandbox';
+
+// Production callback host registered with the MTN API user (providerCallbackHost
+// = api.cmcda.org). When this URL is sent as X-Callback-Url on requesttopay, MTN
+// PUTs the final status here ONCE (no retry), so momoWebbook is only a fast-path —
+// checkMtnMomoDeposit polling + cleanStuckMtnMomoDeposits remain the safety net.
+// Routed to the momoWebhook function via the Firebase Hosting rewrite in
+// firebase.json. The host MUST match the registered providerCallbackHost, so it is
+// only attached in production (the sandbox API user isn't registered to this host).
+const MTN_CALLBACK_URL = 'https://api.cmcda.org/webhook/momo';
+
+interface MtnEnv {
+  baseUrl: string;
+  target: string;
+  currency: string;
+  apiUser: string;
+  apiKey: string;
+  subscriptionKey: string;
+  environment: string; // 'production' | 'sandbox'
+  // X-Callback-Url to attach to requesttopay (production only; '' = poll-only).
+  callbackUrl: string;
+}
+
+// Resolves the active MTN environment from app_config/payment_config (shared
+// with pawaPay). Defaults to production on a missing field or read failure, so
+// the app never silently runs against the sandbox.
+async function resolveMtnEnv(): Promise<MtnEnv> {
+  let environment = 'production';
+  try {
+    const snap = await db.collection('app_config').doc('payment_config').get();
+    if ((snap.data()?.environment as string) === 'sandbox') environment = 'sandbox';
+  } catch {
+    environment = 'production';
+  }
+  if (environment === 'sandbox') {
+    return {
+      baseUrl: MTN_SANDBOX_BASE,
+      target: MTN_SANDBOX_TARGET,
+      currency: 'EUR', // MTN sandbox only settles in EUR
+      apiUser: MTN_SANDBOX_API_USER.value(),
+      apiKey: MTN_SANDBOX_API_KEY.value(),
+      subscriptionKey: MTN_SANDBOX_SUBSCRIPTION_KEY.value(),
+      environment,
+      // Sandbox API user isn't registered to api.cmcda.org — poll-only.
+      callbackUrl: '',
+    };
+  }
+  return {
+    baseUrl: MTN_PROD_BASE,
+    target: MTN_PROD_TARGET,
+    currency: 'XAF',
+    apiUser: MTN_API_USER.value(),
+    apiKey: MTN_API_KEY.value(),
+    subscriptionKey: MTN_SUBSCRIPTION_KEY.value(),
+    environment,
+    callbackUrl: MTN_CALLBACK_URL,
+  };
+}
+
+// Per-environment access-token cache. MTN tokens live ~1 h; Cloud Functions
+// instances are short-lived, so this just avoids a token round-trip on each warm
+// invocation. Refreshed 60 s before expiry.
+const _mtnTokenCache: Record<string, { token: string; expiresAt: number }> = {};
+
+async function getMtnToken(env: MtnEnv): Promise<string> {
+  const cached = _mtnTokenCache[env.environment];
+  if (cached && Date.now() < cached.expiresAt) return cached.token;
+
+  const basic = Buffer.from(`${env.apiUser}:${env.apiKey}`).toString('base64');
+  const res = await fetch(`${env.baseUrl}/collection/token/`, {
+    method: 'POST',
+    headers: {
+      'Authorization': `Basic ${basic}`,
+      'Ocp-Apim-Subscription-Key': env.subscriptionKey,
+    },
+  });
+  if (!res.ok) {
+    // MTN's error body carries the real reason (e.g. invalid subscription key,
+    // wrong API user/key) — it contains no secrets, so log it for diagnosis.
+    const errText = await res.text().catch(() => '');
+    console.error(
+      `[getMtnToken] token request failed env=${env.environment} ` +
+      `target=${env.target} host=${env.baseUrl} HTTP ${res.status}: ${errText}`,
+    );
+    throw new HttpsError('internal', `MTN token request failed (HTTP ${res.status}).`);
+  }
+  const body: any = await res.json().catch(() => null);
+  const token = body?.access_token as string | undefined;
+  if (!token) throw new HttpsError('internal', 'MTN token response had no access_token.');
+  const ttlMs = ((body?.expires_in as number) ?? 3600) * 1000;
+  _mtnTokenCache[env.environment] = { token, expiresAt: Date.now() + ttlMs - 60_000 };
+  return token;
+}
+
+interface MtnResult { ok: boolean; status: number; body: any; }
+
+// Calls the MTN Collection API with the bearer token for the resolved
+// environment. Returns parsed JSON + ok flag rather than throwing, so callers
+// can map failures to contribution state. requesttopay returns 202 with an empty
+// body, so a missing/non-JSON body is normal — never treat it as an error.
+async function mtnFetch(
+  env: MtnEnv,
+  token: string,
+  path: string,
+  method: 'GET' | 'POST',
+  referenceId?: string,
+  body?: unknown,
+  callbackUrl?: string,
+): Promise<MtnResult> {
+  const headers: Record<string, string> = {
+    'Authorization': `Bearer ${token}`,
+    'X-Target-Environment': env.target,
+    'Ocp-Apim-Subscription-Key': env.subscriptionKey,
+    'Content-Type': 'application/json',
+  };
+  if (referenceId) headers['X-Reference-Id'] = referenceId;
+  // When set, MTN PUTs the final status to this URL (host must match the API
+  // user's registered providerCallbackHost). Only valid on requesttopay.
+  if (callbackUrl) headers['X-Callback-Url'] = callbackUrl;
+  const res = await fetch(`${env.baseUrl}${path}`, {
+    method,
+    headers,
+    body: body ? JSON.stringify(body) : undefined,
+  });
+  let parsed: any = null;
+  try { parsed = await res.json(); } catch { parsed = null; }
+  return { ok: res.ok, status: res.status, body: parsed };
+}
+
+// Maps an MTN requesttopay `reason` (a string or { code, message }) onto the
+// SAME stable failure tokens pawaPay uses, so the client localizes both gateways
+// through the existing AppLocalizations.pawaPayFailure(code). French fallback
+// messages reuse PP_FAILURE_FR.
+function normalizeMtnFailure(reason: any): { code: string; message: string } {
+  const raw = typeof reason === 'string'
+    ? reason
+    : (reason?.code ?? reason?.message ?? '');
+  const c = String(raw).toUpperCase();
+  let code = 'GENERIC';
+  if (c.includes('NOT_ENOUGH_FUNDS') || c.includes('INSUFFICIENT') || c.includes('LOW_BALANCE')) {
+    code = 'INSUFFICIENT_BALANCE';
+  } else if (c.includes('APPROVAL_REJECTED') || c.includes('NOT_APPROVED') || c.includes('CANCEL')) {
+    code = 'PAYMENT_NOT_APPROVED';
+  } else if (c.includes('PAYER_NOT_FOUND') || c.includes('PAYEE_NOT_FOUND') ||
+             c.includes('RESOURCE_NOT_FOUND') || c.includes('ACCOUNTHOLDER')) {
+    code = 'PAYER_NOT_FOUND';
+  } else if (c.includes('LIMIT')) {
+    code = 'PAYER_LIMIT_REACHED';
+  } else if (c.includes('UNAVAILABLE') || c.includes('INTERNAL_PROCESSING_ERROR') ||
+             c.includes('SERVICE')) {
+    code = 'PROVIDER_UNAVAILABLE';
+  } else if (c.includes('AMOUNT')) {
+    code = 'AMOUNT_OUT_OF_LIMITS';
+  } else if (c.includes('NOT_ALLOWED') || c.includes('NOTALLOWED')) {
+    // MTN refuses the collection at the account level (product not activated for
+    // live collections, tier restriction, etc.) — distinct from a user-side
+    // rejection. Surface a message that points at the account, not the payer.
+    code = 'NOT_ALLOWED';
+  } else if (c.includes('INVALID') || c.includes('MSISDN') || c.includes('PARTYID')) {
+    code = 'INVALID_NUMBER';
+  } else if (c.includes('EXPIRED') || c.includes('TIMEOUT')) {
+    code = 'TIMEOUT';
+  }
+  const message = PP_FAILURE_FR[code] ?? PP_FAILURE_FR.GENERIC;
+  return { code, message };
+}
+
+/**
+ * Reconciles a contribution doc with an MTN requesttopay status payload.
+ * Idempotent: no-op once the contribution is already confirmed/failed.
+ *
+ * Mirrors reconcileDeposit (pawaPay): on SUCCESSFUL we credit
+ * users/{id}.totalContributed and counters/platform.totalContributed HERE,
+ * because the doc was created `pending` and the client never credited it.
+ * Flipping status → confirmed then triggers onContributionConfirmed for region
+ * totals, the wallet inflow tx, the matricule, and the "payment confirmed"
+ * notification. The MTN-collected balance is tracked per environment in
+ * counters/mtnmomo (separate from pawaPay's wallet). Returns the resulting
+ * contribution status.
+ */
+async function reconcileMtnDeposit(
+  contribRef: admin.firestore.DocumentReference,
+  payload: { status?: string; reason?: any; financialTransactionId?: string },
+): Promise<string> {
+  const snap = await contribRef.get();
+  if (!snap.exists) return 'failed';
+  const data = snap.data()!;
+  const current = (data.status as string) ?? 'pending';
+  if (current === 'confirmed' || current === 'failed') return current;
+
+  const mtnStatus = (payload.status as string) ?? '';
+
+  if (mtnStatus === 'SUCCESSFUL') {
+    const memberId = (data.memberId as string) ?? '';
+    const amount = (data.amount as number) ?? 0;
+    if (memberId && amount > 0) {
+      await db.collection(COL_USERS).doc(memberId).update({
+        totalContributed: admin.firestore.FieldValue.increment(amount),
+      });
+      await db.collection('counters').doc('platform').set(
+        { totalContributed: admin.firestore.FieldValue.increment(amount) },
+        { merge: true },
+      );
+      const e = (data.mtnEnvironment as string) === 'sandbox' ? 'sandbox' : 'production';
+      await db.collection('counters').doc('mtnmomo').set(
+        { [`collected_${e}`]: admin.firestore.FieldValue.increment(amount) },
+        { merge: true },
+      );
+    }
+    await contribRef.update({
+      status: 'confirmed',
+      confirmedAt: admin.firestore.FieldValue.serverTimestamp(),
+      mtnStatus,
+      ...(payload.financialTransactionId
+        ? { mtnFinancialTransactionId: payload.financialTransactionId }
+        : {}),
+    });
+    return 'confirmed';
+  }
+
+  if (mtnStatus === 'FAILED') {
+    const { code, message } = normalizeMtnFailure(payload.reason);
+    await contribRef.update({
+      status: 'failed',
+      notes: message,
+      // Reuse the client's localized failure token (see normalizeMtnFailure).
+      pawaPayFailureCode: code,
+      mtnStatus,
+    });
+    return 'failed';
+  }
+
+  // PENDING (or any non-terminal status) — still awaiting the payer's PIN.
+  if (mtnStatus) await contribRef.update({ mtnStatus });
+  return 'pending';
+}
+
+// ── initiateMtnMomoDeposit ─────────────────────────────────────────
+// Callable: { amount, periodType, phoneNumber, memberId? }
+// Creates the contribution (pending) and pushes an MTN MoMo PIN prompt to the
+// payer. Resolved later by checkMtnMomoDeposit / cleanStuckMtnMomoDeposits.
+
+interface InitiateMtnDepositRequest {
+  amount: number;
+  periodType: string;
+  phoneNumber: string;
+  // Optional: staff (focal/admin) charging a member's MoMo on their behalf.
+  memberId?: string;
+}
+
+export const initiateMtnMomoDeposit = onCall<InitiateMtnDepositRequest>(
+  { region: 'europe-west1', secrets: MTN_SECRETS },
+  async (request) => {
+    if (!request.auth) {
+      throw new HttpsError('unauthenticated', 'Must be signed in.');
+    }
+    const callerUid = request.auth.uid;
+    const { amount, periodType, phoneNumber, memberId: targetMemberId } = request.data;
+
+    if (!Number.isInteger(amount) || amount <= 0) {
+      throw new HttpsError('invalid-argument', 'amount must be a positive integer.');
+    }
+    const msisdn = toMsisdn(phoneNumber);
+    if (msisdn.length < 11) {
+      throw new HttpsError('invalid-argument', 'Invalid phone number.');
+    }
+
+    // Staff (focal/admin) may charge another member's MoMo; everyone else can
+    // only pay for themselves. recordedBy always stays the caller.
+    let memberId = callerUid;
+    if (targetMemberId && targetMemberId !== callerUid) {
+      const callerSnap = await db.collection(COL_USERS).doc(callerUid).get();
+      const callerRole = (callerSnap.data()?.role as string) ?? 'member';
+      if (!['focal', 'admin', 'super_admin'].includes(callerRole)) {
+        throw new HttpsError(
+          'permission-denied',
+          'Only staff can record a payment for another member.',
+        );
+      }
+      memberId = targetMemberId;
+    }
+
+    const userSnap = await db.collection(COL_USERS).doc(memberId).get();
+    if (!userSnap.exists) {
+      throw new HttpsError('not-found', 'User profile not found.');
+    }
+    const user = userSnap.data()!;
+    if ((user.status as string) === 'suspended') {
+      throw new HttpsError('permission-denied', 'Account suspended.');
+    }
+
+    const env = await resolveMtnEnv();
+    const token = await getMtnToken(env);
+    const referenceId = uuidv4();
+    const contribRef = db.collection(COL_CONTRIBUTIONS).doc();
+
+    await contribRef.set({
+      memberId,
+      memberName: (user.fullName as string) ?? '',
+      memberNumber: (user.memberNumber as string) ?? '',
+      amount,
+      period: currentPeriod(),
+      periodType: periodType || 'monthly',
+      paymentMethod: providerToMethod(PAWAPAY_PROVIDER_MTN), // 'mtn_momo'
+      status: 'pending',
+      receiptNumber: '',
+      recordedBy: callerUid,
+      validationRequired: false,
+      createdAt: admin.firestore.FieldValue.serverTimestamp(),
+      // MTN-direct markers (parallel to pawaPay's depositId/pawaPayEnvironment).
+      mtnReferenceId: referenceId,
+      mtnStatus: 'PENDING',
+      mtnEnvironment: env.environment,
+      pawaPayProvider: PAWAPAY_PROVIDER_MTN, // logical provider tag (MTN)
+      payerPhone: msisdn,
+    });
+
+    const result = await mtnFetch(
+      env, token, '/collection/v1_0/requesttopay', 'POST', referenceId,
+      {
+        amount: String(amount),
+        currency: env.currency,
+        externalId: contribRef.id,
+        payer: { partyIdType: 'MSISDN', partyId: msisdn },
+        payerMessage: 'Contribution CMCDA',
+        payeeNote: `Contribution ${contribRef.id}`,
+      },
+      // Push the final status to momoWebhook (production only). Polling stays the
+      // fallback — MTN sends the callback once with no retry.
+      env.callbackUrl,
+    );
+
+    // 202 Accepted = the PIN prompt was pushed successfully. Anything else is a
+    // hard initiation failure (bad number, provider down, limits, …).
+    if (!result.ok) {
+      // Log MTN's exact rejection (status + body). The body carries the real
+      // cause — invalid X-Target-Environment, currency not supported, bad
+      // MSISDN, etc. — and contains no secrets.
+      console.error(
+        `[initiateMtnMomoDeposit] requesttopay rejected env=${env.environment} ` +
+        `target=${env.target} currency=${env.currency} msisdn=${msisdn} ` +
+        `HTTP ${result.status}: ${JSON.stringify(result.body)}`,
+      );
+      const { code, message } = normalizeMtnFailure(
+        result.body?.code ?? result.body?.message ?? `HTTP_${result.status}`,
+      );
+      await contribRef.update({
+        status: 'failed',
+        notes: message,
+        pawaPayFailureCode: code,
+        mtnStatus: 'FAILED',
+      });
+      throw new HttpsError(
+        'internal',
+        `MTN deposit initiation failed (HTTP ${result.status}).`,
+        { failureCode: code },
+      );
+    }
+
+    return { contributionId: contribRef.id, referenceId, status: 'PENDING' };
+  },
+);
+
+// ── checkMtnMomoDeposit ────────────────────────────────────────────
+// Callable poll: { contributionId }. Fetches the live requesttopay status from
+// MTN and reconciles it. The client calls this repeatedly while waiting (MTN has
+// no inbound webhook), and cleanStuckMtnMomoDeposits sweeps abandoned ones.
+
+interface CheckMtnDepositRequest { contributionId: string; }
+
+export const checkMtnMomoDeposit = onCall<CheckMtnDepositRequest>(
+  { region: 'europe-west1', secrets: MTN_SECRETS },
+  async (request) => {
+    if (!request.auth) {
+      throw new HttpsError('unauthenticated', 'Must be signed in.');
+    }
+    const { contributionId } = request.data;
+    if (!contributionId) {
+      throw new HttpsError('invalid-argument', 'contributionId is required.');
+    }
+
+    const contribRef = db.collection(COL_CONTRIBUTIONS).doc(contributionId);
+    const snap = await contribRef.get();
+    if (!snap.exists) {
+      throw new HttpsError('not-found', 'Contribution not found.');
+    }
+    const data = snap.data()!;
+
+    // Owner or staff only.
+    const callerSnap = await db.collection(COL_USERS).doc(request.auth.uid).get();
+    const callerRole = (callerSnap.data()?.role as string) ?? 'member';
+    const isStaff = ['focal', 'admin', 'super_admin'].includes(callerRole);
+    if (data.memberId !== request.auth.uid && !isStaff) {
+      throw new HttpsError('permission-denied', 'Not allowed.');
+    }
+
+    const currentStatus = (data.status as string) ?? 'pending';
+    if (currentStatus === 'confirmed' || currentStatus === 'failed') {
+      return { status: currentStatus };
+    }
+
+    const referenceId = data.mtnReferenceId as string | undefined;
+    if (!referenceId) {
+      throw new HttpsError('failed-precondition', 'No MTN reference on contribution.');
+    }
+
+    const env = await resolveMtnEnv();
+    const token = await getMtnToken(env);
+    const result = await mtnFetch(
+      env, token, `/collection/v1_0/requesttopay/${referenceId}`, 'GET',
+    );
+    // Log MTN's verbatim status payload (status + reason) — no secrets — so we
+    // can see exactly why a deposit resolves to FAILED rather than SUCCESSFUL.
+    console.log(
+      `[checkMtnMomoDeposit] ref=${referenceId} env=${env.environment} ` +
+      `HTTP ${result.status}: ${JSON.stringify(result.body)}`,
+    );
+    if (!result.ok) {
+      throw new HttpsError('internal', `MTN status check failed (HTTP ${result.status}).`);
+    }
+    const status = await reconcileMtnDeposit(contribRef, result.body ?? {});
+    return { status };
+  },
+);
+
+// ── momoWebhook ────────────────────────────────────────────────────
+// HTTP endpoint MTN PUTs the requesttopay result to (X-Callback-Url =
+// https://api.cmcda.org/webhook/momo, routed here by the Hosting rewrite). MTN
+// fires it ONCE with no retry, so it is purely a fast path — the client poll and
+// the hourly sweep still resolve anything that never arrives.
+//
+// MTN callbacks are NOT signed, so we never trust the request body: we use it
+// only to locate the contribution (by externalId = our doc id, or the
+// X-Reference-Id header), then re-fetch the AUTHORITATIVE status from MTN with our
+// own credentials before reconciling. A forged callback can at most trigger one
+// extra status fetch for a real, still-pending deposit — it can never confirm a
+// payment that MTN didn't actually settle. Always 200 so MTN doesn't log failures.
+
+export const momoWebhook = onRequest(
+  { region: 'europe-west1', secrets: MTN_SECRETS },
+  async (req, res) => {
+    if (req.method !== 'POST' && req.method !== 'PUT') {
+      res.status(405).send('Method Not Allowed');
+      return;
+    }
+
+    try {
+      const payload = (req.body ?? {}) as Record<string, unknown>;
+      const externalId = payload.externalId as string | undefined;
+      const headerRef =
+        (req.header('X-Reference-Id') ?? req.header('x-reference-id')) || undefined;
+
+      // Locate the contribution. externalId is our (unguessable) doc id; fall back
+      // to a query on mtnReferenceId if MTN only echoed the reference header.
+      let contribRef: admin.firestore.DocumentReference | null = null;
+      if (externalId) {
+        const ref = db.collection(COL_CONTRIBUTIONS).doc(externalId);
+        if ((await ref.get()).exists) contribRef = ref;
+      }
+      if (!contribRef && headerRef) {
+        const q = await db
+          .collection(COL_CONTRIBUTIONS)
+          .where('mtnReferenceId', '==', headerRef)
+          .limit(1)
+          .get();
+        if (!q.empty) contribRef = q.docs[0].ref;
+      }
+      if (!contribRef) {
+        console.warn(
+          `[momoWebhook] no contribution for externalId=${externalId} ref=${headerRef}`,
+        );
+        res.status(200).send('OK');
+        return;
+      }
+
+      const data = (await contribRef.get()).data()!;
+      const current = (data.status as string) ?? 'pending';
+      if (current === 'confirmed' || current === 'failed') {
+        res.status(200).send('OK');
+        return;
+      }
+      const referenceId = data.mtnReferenceId as string | undefined;
+      if (!referenceId) {
+        res.status(200).send('OK');
+        return;
+      }
+
+      // Authoritative status from MTN — the callback body is never trusted.
+      const env = await resolveMtnEnv();
+      const token = await getMtnToken(env);
+      const result = await mtnFetch(
+        env, token, `/collection/v1_0/requesttopay/${referenceId}`, 'GET',
+      );
+      console.log(
+        `[momoWebhook] ref=${referenceId} env=${env.environment} ` +
+        `HTTP ${result.status}: ${JSON.stringify(result.body)}`,
+      );
+      if (result.ok) {
+        await reconcileMtnDeposit(contribRef, result.body ?? {});
+      }
+    } catch (e) {
+      console.error('[momoWebhook] reconcile error', e);
+    }
+    // Always 200: MTN doesn't retry, and the poll/sweep cover anything missed.
+    res.status(200).send('OK');
+  },
+);
+
+// ── cleanStuckMtnMomoDeposits ──────────────────────────────────────
+// Runs hourly. Finds MTN mobile-money contributions still `pending` after 2 h
+// (payer ignored the PIN prompt, or the app was closed before the poll
+// resolved), fetches the live status from MTN, and reconciles. Any deposit
+// still unresolved is force-marked `failed` so the pending queue never
+// accumulates ghost entries. Reuses the existing (status, createdAt) index;
+// MTN deposits are identified in-memory by the presence of mtnReferenceId.
+
+export const cleanStuckMtnMomoDeposits = onSchedule(
+  { region: 'europe-west1', schedule: 'every 1 hours', secrets: MTN_SECRETS },
+  async () => {
+    const cutoff = admin.firestore.Timestamp.fromDate(
+      new Date(Date.now() - 2 * 60 * 60 * 1000),
+    );
+
+    const snap = await db
+      .collection(COL_CONTRIBUTIONS)
+      .where('status', '==', 'pending')
+      .where('createdAt', '<', cutoff)
+      .orderBy('createdAt', 'asc')
+      .get();
+
+    const mtn = snap.docs.filter((d) => !!(d.data().mtnReferenceId as string | undefined));
+    if (mtn.length === 0) {
+      console.log('[cleanStuckMtnMomoDeposits] nothing to process');
+      return;
+    }
+
+    const env = await resolveMtnEnv();
+    let token: string;
+    try {
+      token = await getMtnToken(env);
+    } catch (e) {
+      console.error('[cleanStuckMtnMomoDeposits] token error', e);
+      return;
+    }
+
+    let reconciled = 0;
+    let forceFailed = 0;
+
+    await Promise.all(
+      mtn.map(async (doc) => {
+        const referenceId = doc.data().mtnReferenceId as string;
+        try {
+          const r = await mtnFetch(
+            env, token, `/collection/v1_0/requesttopay/${referenceId}`, 'GET',
+          );
+          if (r.ok) {
+            const result = await reconcileMtnDeposit(doc.ref, r.body ?? {});
+            if (result !== 'pending') {
+              reconciled++;
+              return;
+            }
+          }
+        } catch (e) {
+          console.warn(`[cleanStuckMtnMomoDeposits] fetch error for ${referenceId}`, e);
+        }
+
+        // Still pending after cutoff (or MTN returned an error) — force fail.
+        await doc.ref.update({
+          status: 'failed',
+          notes: 'Délai de paiement expiré',
+          pawaPayFailureCode: 'TIMEOUT',
+          mtnStatus: 'FAILED',
+        });
+        forceFailed++;
+      }),
+    );
+
+    console.log(
+      `[cleanStuckMtnMomoDeposits] scanned=${mtn.length} reconciled=${reconciled} forceFailed=${forceFailed}`,
     );
   },
 );

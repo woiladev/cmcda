@@ -25,6 +25,15 @@
       "firebase.json",
       "**/.*",
       "**/node_modules/**"
+    ],
+    "rewrites": [
+      {
+        "source": "/webhook/momo",
+        "function": {
+          "functionId": "momoWebhook",
+          "region": "europe-west1"
+        }
+      }
     ]
   },
   "flutter": {
